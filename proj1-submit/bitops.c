@@ -1,6 +1,7 @@
 /*
 * Add NetID and names of all project partners
-*
+* mk2177 Aiman Koli
+* idk ur net id Saroop Makhija
 */
 #include <stdio.h>
 #include <string.h>
