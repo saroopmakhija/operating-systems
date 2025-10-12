@@ -14,7 +14,11 @@ double avg_resp_time=0;
 
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 // YOUR CODE HERE
-
+#define STACK_SIZE 8192
+static worker_t next_thread_id = 0;
+static queue_node ready_queue;
+static ucontext_t scheduler_context;
+static int scheduler_initialized = 0;
 
 /* create a new thread */
 int worker_create(worker_t * thread, pthread_attr_t * attr, 
@@ -27,9 +31,79 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
        // - make it ready for the execution.
 
        // YOUR CODE HERE
+	   if(!scheduler_initialized){
+		getcontext(&scheduler_context);
+		*stack_ptr=malloc(STACK_SIZE);
+		if (!*stack_ptr) {
+			perror("malloc(stack)");
+			exit(1);
+		}
+		schdulder_context->uc_stack.ss_sp=stack_ptr;
+		schdulder_context->uc_stack.ss_size=STACK_SIZE;
+		schdulder_context->uc_link=NULL;
+		makecontext(&schdulder_context,schedule,0)
+		scheduler_initialized = 1;
+	   }
+
+	   tcb *new_tcb = (tcb *)malloc(sizeof(tcb));
+	   if(!new_tcb) return -1;
+
+	   new_tcb->thread_id=next_thread_id++;
+	   new_tcb->thread_status= THREAD_READY;
+	   new_tcb->priority = 0;
+
+	   //Allocate Stack
+	   new_tcb->stack = malloc(STACK_SIZE);
+	   if(!new_tcb->stack){
+		free(new_tcb);
+        return -1;
+	   }
+	   new_tcb->stack_size = STACK_SIZE;
+
+	   if (getcontext(&new_tcb->context) < 0) {
+        free(new_tcb->stack);
+        free(new_tcb);
+        return -1;
+    }
+
+	new_tcb->context.uc_stack.ss_sp = new_tcb->stack;
+    new_tcb->context.uc_stack.ss_size = STACK_SIZE;
+    new_tcb->context.uc_link = NULL;
+
+	makecontext(&new_tcb->context, (void (*)())function, 1, arg);
+	*thread = new_tcb->thread_id;
+
+	enqueue(new_tcb, 0); // switch to tcb->priority for part 2
 	
     return 0;
 };
+
+void enqueue(tcb* new_tcb, int priority) {
+    queue_node *new_node = malloc(sizeof(queue_node));
+    new_node->thread = new_tcb;
+    new_node->next = NULL;
+    
+    if (priority_queues[priority] == NULL) {
+        priority_queues[priority] = new_node;
+    } else {
+        queue_node *curr = priority_queues[priority];
+        while (curr->next != NULL) {
+            curr = curr->next;
+        }
+        curr->next = new_node;
+    }
+}
+
+tcb* dequeue() {
+    if (ready_queue == NULL) return NULL;
+    
+    queue_node *temp = ready_queue;
+    tcb *popped = temp->thread;
+    ready_queue = ready_queue->next;
+    free(temp);
+    
+    return popped;
+}
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield() {

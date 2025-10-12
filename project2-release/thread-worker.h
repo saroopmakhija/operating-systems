@@ -31,16 +31,25 @@
 typedef uint worker_t;
 
 typedef struct TCB {
-	/* add important states in a thread control block */
-	// thread Id
-	// thread status
-	// thread context
-	// thread stack
-	// thread priority
-	// And more ...
-
-	// YOUR CODE HERE
+	worker_t thread_id; // Increasing thread ID
+	enum thread_state thread_status; // Using enum instead of mapping it to int values like in the project pdf
+	ucontext_t context; 
+	int priority; // Priority to be entered in the scheduling queue
+	void * stack; // DUH STACK
+	size_t stack_size; // DUH STACK SIZE
 } tcb; 
+
+enum thread_state {
+    THREAD_READY,
+    THREAD_RUNNING,
+    THREAD_BLOCKED,
+};
+
+typedef struct queue_node {
+    tcb *thread;
+    struct queue_node *next;
+} queue_node;
+
 
 /* mutex struct definition */
 typedef struct worker_mutex_t {
@@ -63,6 +72,12 @@ int worker_create(worker_t * thread, pthread_attr_t * attr, void
 
 /* give CPU pocession to other user level worker threads voluntarily */
 int worker_yield();
+
+void enqueue(tcb* new_tcb){
+}
+
+tcb* dequeue(){
+}
 
 /* terminate a thread */
 void worker_exit(void *value_ptr);
