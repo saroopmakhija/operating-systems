@@ -141,17 +141,24 @@ int worker_yield() {
 	// - change worker thread's state from Running to Ready
 	// - save context of this thread to its thread control block
 	// - switch from thread context to scheduler context
-
-	// YOUR CODE HERE
-	
+	current_thread->thread_status=READY;
+	swapcontext(&current_thread->context, &scheduler_context);
 	return 0;
 };
 
 /* terminate a thread */
 void worker_exit(void *value_ptr) {
 	// - de-allocate any dynamic memory created when starting this thread
-
 	// YOUR CODE HERE
+	if (value_ptr != NULL) {
+        current_thread->return_value = value_ptr;
+    }
+    current_thread->thread_status = TERMINATED; 
+    free(current_thread->stack);
+    free(current_thread);
+    current_thread = NULL;
+    
+    setcontext(&scheduler_context);
 };
 
 
@@ -162,6 +169,10 @@ int worker_join(worker_t thread, void **value_ptr) {
 	// - de-allocate any dynamic memory created by the joining thread
   
 	// YOUR CODE HERE
+
+	if(thread->thread_status==TERMINATED){
+		
+	}
 	return 0;
 };
 

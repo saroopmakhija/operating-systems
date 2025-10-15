@@ -37,12 +37,14 @@ typedef struct TCB {
 	int priority; // Priority to be entered in the scheduling queue
 	void * stack; // DUH STACK
 	size_t stack_size; // DUH STACK SIZE
+	void *return_value; // Return value of the thread
 } tcb; 
 
 enum thread_state {
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,
+	TERMINATED
 };
 
 typedef struct queue_node {
