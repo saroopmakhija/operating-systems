@@ -14,11 +14,15 @@ double avg_resp_time=0;
 
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 // YOUR CODE HERE
-#define STACK_SIZE 8192
+#define STACK_SIZE SIGSTKSZ
+#define NUM_PRIORITIES 10
 static worker_t next_thread_id = 0;
-static queue_node ready_queue;
+static queue_node *priority_queues[NUM_PRIORITIES] = {NULL};
 static ucontext_t scheduler_context;
+static ucontext_t main_context;
+static void *scheduler_stack;
 static int scheduler_initialized = 0;
+static tcb *current_thread = NULL;
 
 /* create a new thread */
 int worker_create(worker_t * thread, pthread_attr_t * attr, 
@@ -33,16 +37,18 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
        // YOUR CODE HERE
 	   if(!scheduler_initialized){
 		getcontext(&scheduler_context);
-		*stack_ptr=malloc(STACK_SIZE);
-		if (!*stack_ptr) {
+		void *stack_ptr=malloc(STACK_SIZE);
+		if (!stack_ptr) {
 			perror("malloc(stack)");
 			exit(1);
 		}
-		schdulder_context->uc_stack.ss_sp=stack_ptr;
-		schdulder_context->uc_stack.ss_size=STACK_SIZE;
-		schdulder_context->uc_link=NULL;
-		makecontext(&schdulder_context,schedule,0)
+		scheduler_context.uc_stack.ss_sp=stack_ptr;
+		scheduler_context.uc_stack.ss_size=STACK_SIZE;
+		scheduler_context.uc_link=NULL;
+		getcontext(&main_context);
+		makecontext(&scheduler_context,schedule,0);
 		scheduler_initialized = 1;
+		setup_timer();
 	   }
 
 	   tcb *new_tcb = (tcb *)malloc(sizeof(tcb));
@@ -74,7 +80,9 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	*thread = new_tcb->thread_id;
 
 	enqueue(new_tcb, 0); // switch to tcb->priority for part 2
-	
+	if (next_thread_id == 1) {
+		swapcontext(&main_context, &scheduler_context);
+	}
     return 0;
 };
 
@@ -95,14 +103,36 @@ void enqueue(tcb* new_tcb, int priority) {
 }
 
 tcb* dequeue() {
-    if (ready_queue == NULL) return NULL;
-    
-    queue_node *temp = ready_queue;
-    tcb *popped = temp->thread;
-    ready_queue = ready_queue->next;
-    free(temp);
-    
-    return popped;
+	for (int i = 0; i < NUM_PRIORITIES; i++) {
+        if (priority_queues[i] != NULL) {
+            queue_node *temp = priority_queues[i];
+			tcb *popped = temp->thread;
+            priority_queues[i] = priority_queues[i]->next;
+			free(temp);
+            return popped;
+        }
+    }
+    return NULL;
+}
+
+void setup_timer(){
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler=on_tick;
+	sigaction(SIGPROF,&sa,NULL);
+
+	struct itimerval ta;
+	ta.it_interval.tv_sec = 0;
+	ta.it_interval.tv_usec = QUANTUM * 1000; // 10ms = 10,000 microseconds
+	ta.it_value.tv_sec = 0;
+	ta.it_value.tv_usec = QUANTUM * 1000;
+	setitimer(ITIMER_PROF, &ta, NULL);
+}
+
+void on_tick(){
+	if (current_thread != NULL) {
+		swapcontext(&current_thread->context, &scheduler_context);
+	}
 }
 
 /* give CPU possession to other user-level worker threads voluntarily */
@@ -224,6 +254,9 @@ static void schedule() {
 	// schedule() function
 	
 	//YOUR CODE HERE
+
+	//First Come first serve
+
 
 	// - invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS)
 #if defined(PSJF)

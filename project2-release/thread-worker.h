@@ -73,7 +73,7 @@ int worker_create(worker_t * thread, pthread_attr_t * attr, void
 /* give CPU pocession to other user level worker threads voluntarily */
 int worker_yield();
 
-void enqueue(tcb* new_tcb){
+void enqueue(tcb* new_tcb, int priority){
 }
 
 tcb* dequeue(){
