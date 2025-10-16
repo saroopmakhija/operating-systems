@@ -141,7 +141,7 @@ int worker_yield() {
 	// - change worker thread's state from Running to Ready
 	// - save context of this thread to its thread control block
 	// - switch from thread context to scheduler context
-	current_thread->thread_status=READY;
+	current_thread->thread_status=THREAD_READY;
 	swapcontext(&current_thread->context, &scheduler_context);
 	return 0;
 };
@@ -182,6 +182,14 @@ int worker_mutex_init(worker_mutex_t *mutex,
 	//- initialize data structures for this mutex
 
 	// YOUR CODE HERE
+
+	mutex->locked = 0;
+	mutex->initialized = 0;
+	mutex->owner_thread = -1;
+	mutex->waiting_queue = NULL;
+
+	printf("Mutex initialized\n");
+
 	return 0;
 };
 
@@ -194,6 +202,59 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
         // context switch to the scheduler thread
 
         // YOUR CODE HERE
+
+		if (mutex == NULL || !mutex->initialized) {
+			printf("Mutex not initialized\n");
+			return -1;
+		}
+
+		// Disable timer interrupts while modifying mutex
+		// This prevents race conditions
+		sigset_t sigset, oldset;
+		sigemptyset(&sigset);
+		sigaddset(&sigset, SIGPROF);
+		sigprocmask(SIG_BLOCK, &sigset, &oldset);
+
+		while (mutex->locked && mutex->owner_thread != current_thread->thread_id) {
+			//Mutex is locked, add current thread to waiting queue
+			printf("Mutex is locked, thread %d is blocking\n", current_thread->thread_id);
+			current_thread->thread_status = THREAD_BLOCKED;
+			// Add to waiting queue
+			queue_node *new_node = malloc(sizeof(queue_node));
+			new_node->thread = current_thread;
+			new_node->next = NULL;
+			if (mutex->waiting_queue == NULL) {
+				mutex->waiting_queue = new_node;
+			} else {
+				queue_node *curr = mutex->waiting_queue;
+				while (curr->next != NULL) {
+					curr = curr->next;
+				}
+				curr->next = new_node;
+			}
+			printf("Successfully added to waiting queue\n");
+			        // Re-enable signals before switching out
+			
+			
+			sigprocmask(SIG_SETMASK, &oldset, NULL);
+	
+			//swap context as per instructions
+			// Save current thread context and switch to scheduler
+			swapcontext(&current_thread->context, &scheduler_context);
+			
+			// When we return, re-block signals and check again
+			sigprocmask(SIG_BLOCK, &sigset, &oldset);
+		}
+
+		// Acquired the mutex now
+		mutex->locked = 1;
+		mutex->owner_thread = &current_thread->thread_id;
+		printf("Thread %d acquired the mutex\n", current_thread->thread_id);
+
+		// Re-enable timer interrupts
+		sigprocmask(SIG_SETMASK, &oldset, NULL);
+
+		
         return 0;
 };
 
@@ -203,6 +264,39 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 	// - put threads in block list to run queue 
 	// so that they could compete for mutex later.
 
+	if (mutex == NULL || !mutex->initialized) {
+		printf("Mutex not initialized\n");
+		return -1;
+	}
+
+	if (mutex->owner_thread != &current_thread->thread_id) {
+		printf("Thread %d does not own the mutex\n", current_thread->thread_id);
+		return -1;
+	}
+
+	// Disable interrupts
+    sigset_t sigset, oldset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGPROF);
+    sigprocmask(SIG_BLOCK, &sigset, &oldset);
+
+	// Wake up one thread from the waiting queue if any
+	if (mutex->waiting_queue != NULL) {
+		queue_node *node_to_wake = mutex->waiting_queue;
+		mutex->waiting_queue = mutex->waiting_queue->next;
+		tcb *thread_to_wake = node_to_wake->thread;
+		thread_to_wake->thread_status = THREAD_READY;
+		enqueue(thread_to_wake, thread_to_wake->priority);
+		free(node_to_wake);
+		printf("Woke up thread %d from waiting queue\n", thread_to_wake->thread_id);
+	}
+
+	mutex->locked = 0;
+	mutex->owner_thread = -1;
+
+	// Re-enable interrupts
+    sigprocmask(SIG_SETMASK, &oldset, NULL);
+
 	// YOUR CODE HERE
 	return 0;
 };
@@ -211,6 +305,27 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 /* destroy the mutex */
 int worker_mutex_destroy(worker_mutex_t *mutex) {
 	// - de-allocate dynamic memory created in worker_mutex_init
+
+	if (mutex == NULL || !mutex->initialized) {
+		printf("Mutex not initialized\n");
+		return -1;
+	}
+	if (mutex->locked) {
+		printf("Cannot destroy a locked mutex\n");
+		return -1;
+	}
+
+	// Free waiting queue
+	queue_node *curr = mutex->waiting_queue;
+	while (curr != NULL) {
+		queue_node *temp = curr;
+		curr = curr->next;
+		free(temp);
+	}
+	mutex->waiting_queue = NULL;
+	mutex->locked = 0;
+	mutex->initialized = 0;
+	mutex->owner_thread = -1;
 
 	return 0;
 };

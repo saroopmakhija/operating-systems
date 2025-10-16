@@ -27,6 +27,9 @@
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ucontext.h>
+#include <signal.h>
+#include <sys/time.h>
 
 typedef uint worker_t;
 
@@ -55,9 +58,10 @@ typedef struct queue_node {
 
 /* mutex struct definition */
 typedef struct worker_mutex_t {
-	/* add something here */
-
-	// YOUR CODE HERE
+	int initialized; // 0 = not initialized, 1 = initialized
+	int locked; // 0 = unlocked, 1 = locked
+	worker_t *owner_thread; // Current Worker thread holding the mutex
+	queue_node *waiting_queue; // Queue of threads waiting for the mutex
 } worker_mutex_t;
 
 /* define your data structures here: */
