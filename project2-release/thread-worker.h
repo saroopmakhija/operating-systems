@@ -30,8 +30,16 @@
 #include <ucontext.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <string.h>
 
 typedef uint worker_t;
+
+enum thread_state {
+    THREAD_READY,
+    THREAD_RUNNING,
+    THREAD_BLOCKED,
+	TERMINATED
+};
 
 typedef struct TCB {
 	worker_t thread_id; // Increasing thread ID
@@ -43,12 +51,6 @@ typedef struct TCB {
 	void *return_value; // Return value of the thread
 } tcb; 
 
-enum thread_state {
-    THREAD_READY,
-    THREAD_RUNNING,
-    THREAD_BLOCKED,
-	TERMINATED
-};
 
 typedef struct queue_node {
     tcb *thread;
@@ -63,6 +65,7 @@ typedef struct worker_mutex_t {
 	worker_t *owner_thread; // Current Worker thread holding the mutex
 	queue_node *waiting_queue; // Queue of threads waiting for the mutex
 } worker_mutex_t;
+
 
 /* define your data structures here: */
 // Feel free to add your own auxiliary data structures (linked list or queue etc...)
@@ -79,11 +82,9 @@ int worker_create(worker_t * thread, pthread_attr_t * attr, void
 /* give CPU pocession to other user level worker threads voluntarily */
 int worker_yield();
 
-void enqueue(tcb* new_tcb, int priority){
-}
+void enqueue(tcb* new_tcb, int priority);
 
-tcb* dequeue(){
-}
+tcb* dequeue();
 
 /* terminate a thread */
 void worker_exit(void *value_ptr);

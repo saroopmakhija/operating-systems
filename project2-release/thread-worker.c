@@ -4,7 +4,9 @@
 // iLab Server:
 
 #include "thread-worker.h"
-
+static void schedule();
+static void setup_timer();
+static void on_tick();
 //Global counter for total context switches and 
 //average turn around and response time
 long tot_cntx_switches=0;
@@ -37,6 +39,7 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
        // YOUR CODE HERE
 	   if(!scheduler_initialized){
 		getcontext(&scheduler_context);
+		printf("scheduler context getcontext complete\n");
 		void *stack_ptr=malloc(STACK_SIZE);
 		if (!stack_ptr) {
 			perror("malloc(stack)");
@@ -67,6 +70,7 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	   new_tcb->stack_size = STACK_SIZE;
 
 	   if (getcontext(&new_tcb->context) < 0) {
+		printf("getcontext failed\n");
         free(new_tcb->stack);
         free(new_tcb);
         return -1;
@@ -75,14 +79,16 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	new_tcb->context.uc_stack.ss_sp = new_tcb->stack;
     new_tcb->context.uc_stack.ss_size = STACK_SIZE;
     new_tcb->context.uc_link = NULL;
+	printf("context setup complete\n");
 
 	makecontext(&new_tcb->context, (void (*)())function, 1, arg);
+	printf("makecontext complete\n");
 	*thread = new_tcb->thread_id;
 
 	enqueue(new_tcb, 0); // switch to tcb->priority for part 2
-	if (next_thread_id == 1) {
-		swapcontext(&main_context, &scheduler_context);
-	}
+	// if (next_thread_id == 1) {
+	// 	swapcontext(&main_context, &scheduler_context);
+	// }
     return 0;
 };
 
@@ -93,6 +99,8 @@ void enqueue(tcb* new_tcb, int priority) {
     
     if (priority_queues[priority] == NULL) {
         priority_queues[priority] = new_node;
+		printf("enqueue complete\n");
+
     } else {
         queue_node *curr = priority_queues[priority];
         while (curr->next != NULL) {
@@ -109,9 +117,11 @@ tcb* dequeue() {
 			tcb *popped = temp->thread;
             priority_queues[i] = priority_queues[i]->next;
 			free(temp);
+			printf("dequeue complete\n");
             return popped;
         }
     }
+	printf("dequeue failed\n");
     return NULL;
 }
 
@@ -131,13 +141,16 @@ void setup_timer(){
 
 void on_tick(){
 	if (current_thread != NULL) {
+		current_thread->thread_status = THREAD_READY;
+		enqueue(current_thread, current_thread->priority);
+		tot_cntx_switches++;
 		swapcontext(&current_thread->context, &scheduler_context);
 	}
 }
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield() {
-	
+
 	// - change worker thread's state from Running to Ready
 	// - save context of this thread to its thread control block
 	// - switch from thread context to scheduler context
@@ -157,25 +170,55 @@ void worker_exit(void *value_ptr) {
     free(current_thread->stack);
     free(current_thread);
     current_thread = NULL;
-    
+    tot_cntx_switches++;
     setcontext(&scheduler_context);
 };
 
 
 /* Wait for thread termination */
+/* Wait for thread termination */
 int worker_join(worker_t thread, void **value_ptr) {
-	
-	// - wait for a specific thread to terminate
-	// - de-allocate any dynamic memory created by the joining thread
-  
-	// YOUR CODE HERE
-
-	if(thread->thread_status==TERMINATED){
-		
-	}
-	return 0;
-};
-
+    // - wait for a specific thread to terminate
+    // - de-allocate any dynamic memory created by the joining thread
+    
+    // First, start the scheduler if this is the first join call
+    // and threads haven't started running yet
+    if (current_thread == NULL) {
+        swapcontext(&main_context, &scheduler_context);
+    }
+    
+    while (1) {
+        // Check if any threads remain in queues
+        int has_threads = 0;
+        for (int i = 0; i < NUM_PRIORITIES; i++) {
+            if (priority_queues[i] != NULL) {
+                has_threads = 1;
+                break;
+            }
+        }
+        
+        // If no threads in queues and no current thread, all done
+        if (!has_threads && current_thread == NULL) {
+            break;
+        }
+        
+        // Yield to let other threads run
+        if (current_thread != NULL) {
+            worker_yield();
+        } else {
+            break;
+        }
+    }
+    
+    // For this simple implementation, we can't retrieve specific
+    // thread return values since we don't track individual threads
+    // A complete implementation would maintain a global thread list
+    if (value_ptr != NULL) {
+        *value_ptr = NULL;
+    }
+    
+    return 0;
+}
 /* initialize the mutex lock */
 int worker_mutex_init(worker_mutex_t *mutex, 
                           const pthread_mutexattr_t *mutexattr) {
@@ -184,12 +227,11 @@ int worker_mutex_init(worker_mutex_t *mutex,
 	// YOUR CODE HERE
 
 	mutex->locked = 0;
-	mutex->initialized = 0;
+	mutex->initialized = 1;
 	mutex->owner_thread = -1;
 	mutex->waiting_queue = NULL;
 
 	printf("Mutex initialized\n");
-
 	return 0;
 };
 
@@ -379,21 +421,32 @@ static void schedule() {
 	// should be contexted switched from a thread context to this 
 	// schedule() function
 	
-	//YOUR CODE HERE
 
-	//First Come first serve
+	tcb* next = dequeue();
+if(next == NULL) {
+    // No threads ready - return to main
+    if (current_thread == NULL) {
+        // First call, return to main to finish setup
+        swapcontext(&scheduler_context, &main_context);
+    } else {
+        setcontext(&main_context);
+    }
+    return;
+}
+	current_thread = next;
+    current_thread->thread_status = THREAD_RUNNING;
 
-
-	// - invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS)
-#if defined(PSJF)
-    	sched_psjf();
-#elif defined(MLFQ)
-	sched_mlfq();
-#elif defined(CFS)
-    	sched_cfs();  
-#else
-	# error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
-#endif
+	swapcontext(&scheduler_context, &current_thread->context);
+// 	- invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS)
+// #if defined(PSJF)
+//     	sched_psjf();
+// #elif defined(MLFQ)
+// 	sched_mlfq();
+// #elif defined(CFS)
+//     	sched_cfs();  
+// #else
+// 	# error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
+// #endif
 }
 
 
