@@ -18,13 +18,15 @@ double avg_resp_time=0;
 // YOUR CODE HERE
 #define STACK_SIZE SIGSTKSZ
 #define NUM_PRIORITIES 10
-static worker_t next_thread_id = 0;
+static worker_t next_thread_id = 1;
 static queue_node *priority_queues[NUM_PRIORITIES] = {NULL};
 static ucontext_t scheduler_context;
 static ucontext_t main_context;
 static void *scheduler_stack;
 static int scheduler_initialized = 0;
 static tcb *current_thread = NULL;
+static tcb *main_tcb = NULL;
+static queue_node *all_threads_list = NULL;
 
 /* create a new thread */
 int worker_create(worker_t * thread, pthread_attr_t * attr, 
@@ -48,7 +50,18 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 		scheduler_context.uc_stack.ss_sp=stack_ptr;
 		scheduler_context.uc_stack.ss_size=STACK_SIZE;
 		scheduler_context.uc_link=NULL;
-		getcontext(&main_context);
+		main_tcb = (tcb *)malloc(sizeof(tcb));
+		main_tcb->thread_id = 0;
+		main_tcb->thread_status = THREAD_READY;
+		main_tcb->priority = 0;
+		main_tcb->stack = NULL;
+		main_tcb->stack_size=0;
+		getcontext(&main_tcb->context);
+		queue_node *mainnode = malloc(sizeof(queue_node));
+		mainnode->thread=main_tcb;
+		mainnode->next=NULL;
+		all_threads_list=mainnode;
+		
 		makecontext(&scheduler_context,schedule,0);
 		scheduler_initialized = 1;
 		setup_timer();
@@ -78,7 +91,17 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 
 	new_tcb->context.uc_stack.ss_sp = new_tcb->stack;
     new_tcb->context.uc_stack.ss_size = STACK_SIZE;
-    new_tcb->context.uc_link = NULL;
+    new_tcb->context.uc_link = &scheduler_context;
+	queue_node *node = malloc(sizeof(queue_node));
+	node->thread=new_tcb;
+	node->next=NULL;
+
+	//adding to all threads linked list:
+	queue_node *tmp = all_threads_list;
+	while(tmp->next!=NULL){
+		tmp=tmp->next;
+	}
+	tmp->next=node;
 	printf("context setup complete\n");
 
 	makecontext(&new_tcb->context, (void (*)())function, 1, arg);
@@ -86,9 +109,9 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	*thread = new_tcb->thread_id;
 
 	enqueue(new_tcb, 0); // switch to tcb->priority for part 2
-	// if (next_thread_id == 1) {
-	// 	swapcontext(&main_context, &scheduler_context);
-	// }
+	if (next_thread_id == 2) {
+		swapcontext(&main_tcb->context, &scheduler_context);
+	}
     return 0;
 };
 
@@ -99,7 +122,6 @@ void enqueue(tcb* new_tcb, int priority) {
     
     if (priority_queues[priority] == NULL) {
         priority_queues[priority] = new_node;
-		printf("enqueue complete\n");
 
     } else {
         queue_node *curr = priority_queues[priority];
@@ -117,11 +139,10 @@ tcb* dequeue() {
 			tcb *popped = temp->thread;
             priority_queues[i] = priority_queues[i]->next;
 			free(temp);
-			printf("dequeue complete\n");
             return popped;
         }
     }
-	printf("dequeue failed\n");
+	// printf("dequeue failed\n");
     return NULL;
 }
 
@@ -140,6 +161,7 @@ void setup_timer(){
 }
 
 void on_tick(){
+    fflush(stdout);
 	if (current_thread != NULL) {
 		current_thread->thread_status = THREAD_READY;
 		enqueue(current_thread, current_thread->priority);
@@ -155,6 +177,7 @@ int worker_yield() {
 	// - save context of this thread to its thread control block
 	// - switch from thread context to scheduler context
 	current_thread->thread_status=THREAD_READY;
+	enqueue(current_thread, current_thread->priority);
 	swapcontext(&current_thread->context, &scheduler_context);
 	return 0;
 };
@@ -167,55 +190,60 @@ void worker_exit(void *value_ptr) {
         current_thread->return_value = value_ptr;
     }
     current_thread->thread_status = TERMINATED; 
-    free(current_thread->stack);
-    free(current_thread);
-    current_thread = NULL;
     tot_cntx_switches++;
     setcontext(&scheduler_context);
 };
 
 
 /* Wait for thread termination */
-/* Wait for thread termination */
 int worker_join(worker_t thread, void **value_ptr) {
-    // - wait for a specific thread to terminate
-    // - de-allocate any dynamic memory created by the joining thread
-    
-    // First, start the scheduler if this is the first join call
-    // and threads haven't started running yet
-    if (current_thread == NULL) {
-        swapcontext(&main_context, &scheduler_context);
+	// printf("[JOIN] ENTERED worker_join for thread %d\n", thread);
+    fflush(stdout);
+    if(current_thread == NULL){
+        swapcontext(&main_tcb->context, &scheduler_context);
     }
+
+	if(thread == current_thread->thread_id) return -1;
     
-    while (1) {
-        // Check if any threads remain in queues
-        int has_threads = 0;
-        for (int i = 0; i < NUM_PRIORITIES; i++) {
-            if (priority_queues[i] != NULL) {
-                has_threads = 1;
-                break;
-            }
-        }
-        
-        // If no threads in queues and no current thread, all done
-        if (!has_threads && current_thread == NULL) {
+    queue_node *tmp = all_threads_list;
+    queue_node *prev = NULL;
+    tcb *target_thread = NULL;
+    queue_node *target_node = NULL;
+    
+    while(tmp != NULL){
+        if(tmp->thread->thread_id == thread){
+            target_thread = tmp->thread;
+            target_node = tmp;
             break;
         }
-        
-        // Yield to let other threads run
-        if (current_thread != NULL) {
-            worker_yield();
-        } else {
-            break;
-        }
+        prev = tmp;
+        tmp = tmp->next;
     }
     
-    // For this simple implementation, we can't retrieve specific
-    // thread return values since we don't track individual threads
-    // A complete implementation would maintain a global thread list
-    if (value_ptr != NULL) {
-        *value_ptr = NULL;
+    if(target_thread == NULL){
+		// printf("[JOIN] Thread %d not found!\n", thread);
+        return -1;
     }
+	
+    // printf("[JOIN] Waiting for thread %d (status=%d)\n", thread, target_thread->thread_status);
+    while(target_thread->thread_status != TERMINATED){
+        worker_yield();
+    }
+    
+    if(value_ptr != NULL){
+        *value_ptr = target_thread->return_value;
+    }
+    
+    free(target_thread->stack);
+    free(target_thread);
+    
+    // Remove from list
+    if(prev == NULL){
+        all_threads_list = target_node->next;
+    } else {
+        prev->next = target_node->next;
+    }
+    free(target_node);
     
     return 0;
 }
@@ -228,10 +256,10 @@ int worker_mutex_init(worker_mutex_t *mutex,
 
 	mutex->locked = 0;
 	mutex->initialized = 1;
-	mutex->owner_thread = -1;
+	mutex->owner_thread = NULL;
 	mutex->waiting_queue = NULL;
 
-	printf("Mutex initialized\n");
+	// printf("Mutex initialized\n");
 	return 0;
 };
 
@@ -246,7 +274,7 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
         // YOUR CODE HERE
 
 		if (mutex == NULL || !mutex->initialized) {
-			printf("Mutex not initialized\n");
+			// printf("Mutex not initialized\n");
 			return -1;
 		}
 
@@ -257,9 +285,9 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 		sigaddset(&sigset, SIGPROF);
 		sigprocmask(SIG_BLOCK, &sigset, &oldset);
 
-		while (mutex->locked && mutex->owner_thread != current_thread->thread_id) {
+		while (mutex->locked && (mutex->owner_thread == NULL || *mutex->owner_thread != current_thread->thread_id)) {
 			//Mutex is locked, add current thread to waiting queue
-			printf("Mutex is locked, thread %d is blocking\n", current_thread->thread_id);
+			// printf("Mutex is locked, thread %d is blocking\n", current_thread->thread_id);
 			current_thread->thread_status = THREAD_BLOCKED;
 			// Add to waiting queue
 			queue_node *new_node = malloc(sizeof(queue_node));
@@ -274,7 +302,7 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 				}
 				curr->next = new_node;
 			}
-			printf("Successfully added to waiting queue\n");
+			// printf("Successfully added to waiting queue\n");
 			        // Re-enable signals before switching out
 			
 			
@@ -291,7 +319,7 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 		// Acquired the mutex now
 		mutex->locked = 1;
 		mutex->owner_thread = &current_thread->thread_id;
-		printf("Thread %d acquired the mutex\n", current_thread->thread_id);
+		// printf("Thread %d acquired the mutex\n", current_thread->thread_id);
 
 		// Re-enable timer interrupts
 		sigprocmask(SIG_SETMASK, &oldset, NULL);
@@ -307,12 +335,12 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 	// so that they could compete for mutex later.
 
 	if (mutex == NULL || !mutex->initialized) {
-		printf("Mutex not initialized\n");
+		// printf("Mutex not initialized\n");
 		return -1;
 	}
 
-	if (mutex->owner_thread != &current_thread->thread_id) {
-		printf("Thread %d does not own the mutex\n", current_thread->thread_id);
+	if (mutex->owner_thread == NULL || *mutex->owner_thread != current_thread->thread_id) {
+		// printf("Thread %d does not own the mutex\n", current_thread->thread_id);
 		return -1;
 	}
 
@@ -330,11 +358,11 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 		thread_to_wake->thread_status = THREAD_READY;
 		enqueue(thread_to_wake, thread_to_wake->priority);
 		free(node_to_wake);
-		printf("Woke up thread %d from waiting queue\n", thread_to_wake->thread_id);
+		// printf("Woke up thread %d from waiting queue\n", thread_to_wake->thread_id);
 	}
 
 	mutex->locked = 0;
-	mutex->owner_thread = -1;
+	mutex->owner_thread = NULL;
 
 	// Re-enable interrupts
     sigprocmask(SIG_SETMASK, &oldset, NULL);
@@ -349,11 +377,11 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
 	// - de-allocate dynamic memory created in worker_mutex_init
 
 	if (mutex == NULL || !mutex->initialized) {
-		printf("Mutex not initialized\n");
+		// printf("Mutex not initialized\n");
 		return -1;
 	}
 	if (mutex->locked) {
-		printf("Cannot destroy a locked mutex\n");
+		// printf("Cannot destroy a locked mutex\n");
 		return -1;
 	}
 
@@ -367,7 +395,7 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
 	mutex->waiting_queue = NULL;
 	mutex->locked = 0;
 	mutex->initialized = 0;
-	mutex->owner_thread = -1;
+	mutex->owner_thread = NULL;
 
 	return 0;
 };
@@ -378,6 +406,29 @@ static void sched_psjf() {
 	// (feel free to modify arguments and return types)
 
 	// YOUR CODE HERE
+	// printf("[SCHED] Scheduler running, current_thread=%p\n", current_thread);
+	while(1) {
+        tcb* next = dequeue();
+        
+        if(next == NULL) {
+            // printf("[SCHED] No threads ready, returning to main\n");
+            setcontext(&main_tcb->context);
+        }
+        
+        // printf("[SCHED] Scheduling thread %d\n", next->thread_id);
+        current_thread = next;
+        current_thread->thread_status = THREAD_RUNNING;
+        
+        swapcontext(&scheduler_context, &current_thread->context);
+        // When thread yields/exits, execution returns here
+
+		if (current_thread && current_thread->thread_status == THREAD_RUNNING) {
+            current_thread->thread_status = TERMINATED;
+            tot_cntx_switches++;
+        }
+    }
+	// 	- invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS
+	// printf("first come first serve scheduling complete\n");
 }
 
 
@@ -420,33 +471,16 @@ static void schedule() {
 	// - every time a timer interrupt occurs, your worker thread library 
 	// should be contexted switched from a thread context to this 
 	// schedule() function
-	
-
-	tcb* next = dequeue();
-if(next == NULL) {
-    // No threads ready - return to main
-    if (current_thread == NULL) {
-        // First call, return to main to finish setup
-        swapcontext(&scheduler_context, &main_context);
-    } else {
-        setcontext(&main_context);
-    }
-    return;
-}
-	current_thread = next;
-    current_thread->thread_status = THREAD_RUNNING;
-
-	swapcontext(&scheduler_context, &current_thread->context);
-// 	- invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS)
-// #if defined(PSJF)
-//     	sched_psjf();
-// #elif defined(MLFQ)
-// 	sched_mlfq();
-// #elif defined(CFS)
-//     	sched_cfs();  
-// #else
-// 	# error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
-// #endif
+	// printf("schedule function called\n");
+	#if defined(PSJF)
+			sched_psjf();
+	#elif defined(MLFQ)
+		sched_mlfq();
+	#elif defined(CFS)
+			sched_cfs();  
+	#else
+		# error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
+	#endif
 }
 
 
