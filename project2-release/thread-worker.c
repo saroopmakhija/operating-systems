@@ -10,9 +10,17 @@ static void on_tick();
 //Global counter for total context switches and 
 //average turn around and response time
 long tot_cntx_switches=0;
-double avg_turn_time=0;
-double avg_resp_time=0;
+//double avg_turn_time=0;
+//double avg_resp_time=0;
+//DEPRECATED
 
+static int total_threads_created = 0;
+static int total_threads_completed = 0;
+static double total_turnaround_time = 0;
+static double total_response_time = 0;
+
+int came_from_timer;
+int quantums_since_reset = 0;
 
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 // YOUR CODE HERE
@@ -56,6 +64,16 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 		main_tcb->priority = 0;
 		main_tcb->stack = NULL;
 		main_tcb->stack_size=0;
+
+		//timestamping
+		gettimeofday(&main_tcb->creation_time, NULL);
+		main_tcb->has_run = 0;  // Mark as not yet run
+		total_threads_created++;
+
+		// For PSJF
+		main_tcb->elapsed = 0;   
+
+		//Main TCB setup
 		getcontext(&main_tcb->context);
 		queue_node *mainnode = malloc(sizeof(queue_node));
 		mainnode->thread=main_tcb;
@@ -73,6 +91,12 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	   new_tcb->thread_id=next_thread_id++;
 	   new_tcb->thread_status= THREAD_READY;
 	   new_tcb->priority = 0;
+
+	   // Initialize timing fields
+	   gettimeofday(&new_tcb->creation_time, NULL);
+	   new_tcb->has_run = 0;
+	   new_tcb->elapsed = 0;
+	   total_threads_created++;
 
 	   //Allocate Stack
 	   new_tcb->stack = malloc(STACK_SIZE);
@@ -109,9 +133,7 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
 	*thread = new_tcb->thread_id;
 
 	enqueue(new_tcb, 0); // switch to tcb->priority for part 2
-	if (next_thread_id == 2) {
-		swapcontext(&main_tcb->context, &scheduler_context);
-	}
+	// Don't start scheduler here - let worker_join start it
     return 0;
 };
 
@@ -146,6 +168,48 @@ tcb* dequeue() {
     return NULL;
 }
 
+//Straightforward implementation of dequeue_min
+// Run through priorities (until one is non empty) and find thread w shortest elapsed and pop ts
+tcb* dequeue_min_elapsed() {
+    tcb *min_thread = NULL;
+    queue_node *min_prev = NULL, *min_node = NULL;
+    int min_elapsed = 999999999; //set to a large number
+    
+    // Search all pq for thread with min elapsed quantum
+    for (int i = 0; i < NUM_PRIORITIES; i++) {
+        queue_node *prev = NULL;
+        queue_node *curr = priority_queues[i];
+        
+        while (curr != NULL) {
+            if (curr->thread->thread_status == THREAD_READY && 
+                curr->thread->elapsed < min_elapsed) {
+                min_elapsed = curr->thread->elapsed;
+                min_thread = curr->thread;
+                min_node = curr;
+                min_prev = prev;
+                // Remember which queue this came from
+                min_thread->priority = i;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+    
+    // Remove the minimum thread from its queue
+    if (min_node != NULL) {
+        int priority = min_thread->priority;
+        if (min_prev == NULL) {
+            priority_queues[priority] = min_node->next;
+        } else {
+            min_prev->next = min_node->next;
+        }
+        free(min_node);
+    }
+    
+    return min_thread;
+}
+
+
 void setup_timer(){
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -161,23 +225,22 @@ void setup_timer(){
 }
 
 void on_tick(){
+	came_from_timer = 1;
     fflush(stdout);
 	if (current_thread != NULL) {
-		current_thread->thread_status = THREAD_READY;
-		enqueue(current_thread, current_thread->priority);
-		tot_cntx_switches++;
+		// Timer interrupt - just yield to scheduler
+		// Scheduler will handle re-enqueuing and incrementing counters
 		swapcontext(&current_thread->context, &scheduler_context);
 	}
 }
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield() {
-
+	came_from_timer = 0;
 	// - change worker thread's state from Running to Ready
 	// - save context of this thread to its thread control block
 	// - switch from thread context to scheduler context
-	current_thread->thread_status=THREAD_READY;
-	enqueue(current_thread, current_thread->priority);
+	// Note: Scheduler will handle re-enqueuing
 	swapcontext(&current_thread->context, &scheduler_context);
 	return 0;
 };
@@ -189,8 +252,29 @@ void worker_exit(void *value_ptr) {
 	if (value_ptr != NULL) {
         current_thread->return_value = value_ptr;
     }
-    current_thread->thread_status = TERMINATED; 
-    tot_cntx_switches++;
+
+	//Timestamp stuff
+	gettimeofday(&current_thread->completion_time, NULL);
+	total_threads_completed++;
+	double turnaround = (current_thread->completion_time.tv_sec - 
+		current_thread->creation_time.tv_sec) * 1000000.0 +
+	   (current_thread->completion_time.tv_usec - 
+		current_thread->creation_time.tv_usec);
+
+	
+	double response = (current_thread->first_run_time.tv_sec - 
+		current_thread->creation_time.tv_sec) * 1000000.0 +
+		(current_thread->first_run_time.tv_usec - 
+		current_thread->creation_time.tv_usec);
+
+	total_turnaround_time += turnaround;
+	total_response_time += response;
+
+	current_thread->thread_status = TERMINATED;
+	// Don't free here - worker_join will clean up
+	// Just mark as terminated and switch back to scheduler
+    current_thread = NULL;
+    // Scheduler will handle context switch counting
     setcontext(&scheduler_context);
 };
 
@@ -203,7 +287,8 @@ int worker_join(worker_t thread, void **value_ptr) {
         swapcontext(&main_tcb->context, &scheduler_context);
     }
 
-	if(thread == current_thread->thread_id) return -1;
+	// Check if thread is trying to join itself
+	if(current_thread != NULL && thread == current_thread->thread_id) return -1;
     
     queue_node *tmp = all_threads_list;
     queue_node *prev = NULL;
@@ -401,7 +486,7 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
 };
 
 /* Pre-emptive Shortest Job First (POLICY_PSJF) scheduling algorithm */
-static void sched_psjf() {
+static void sched_fcfs() {
 	// - your own implementation of PSJF
 	// (feel free to modify arguments and return types)
 
@@ -431,6 +516,48 @@ static void sched_psjf() {
 	// printf("first come first serve scheduling complete\n");
 }
 
+static void sched_psjf() {
+    // Scheduler loop - continuously schedule threads
+    while (1) {
+        // If current thread was running and not terminated, put it back
+        if (current_thread != NULL &&
+            current_thread->thread_status != TERMINATED &&
+            current_thread->thread_status != THREAD_BLOCKED) {
+            
+            // Increment elapsed time for the thread that just ran
+            current_thread->elapsed++;
+            
+            // Set status to ready and re-enqueue
+            current_thread->thread_status = THREAD_READY;
+            enqueue(current_thread, current_thread->priority);
+        }
+        
+        // Get thread with minimum elapsed time
+        tcb *next_thread = dequeue_min_elapsed();
+        
+        if (next_thread == NULL) {
+            // No runnable threads - return to main
+            setcontext(&main_tcb->context);
+        }
+        
+        // Track first run time
+        if (!next_thread->has_run) {
+            gettimeofday(&next_thread->first_run_time, NULL);
+            next_thread->has_run = 1;
+        }
+        
+        // Context switch
+        tot_cntx_switches++;
+        
+        // Set as running
+        next_thread->thread_status = THREAD_RUNNING;
+        current_thread = next_thread;
+        
+        // Switch to selected thread
+        swapcontext(&scheduler_context, &next_thread->context);
+        // When thread yields/exits, execution returns here and loop continues
+    }
+}
 
 /* Preemptive MLFQ scheduling algorithm */
 static void sched_mlfq() {
@@ -445,6 +572,96 @@ static void sched_mlfq() {
 	// Step2.2: Otherwise, push the thread back to its origin queue
 	// Step3: If time period S passes, promote all threads to the topmost queue (Rule 5)
 	// Step4: Apply RR on the topmost queue with entries and run next thread
+
+	while(1) {
+		// STEP 1: Handle the thread that just ran
+		if (current_thread != NULL && 
+		    current_thread->thread_status != THREAD_BLOCKED && 
+		    current_thread->thread_status != TERMINATED) {
+			
+			// Rule 4: Count time at this level regardless of how CPU was given up
+			// Increment elapsed whether preempted or yielded
+			if (came_from_timer) {
+				// Thread was preempted - used full quantum
+				current_thread->elapsed++;
+			} else {
+				// Thread yielded voluntarily - still counts toward allotment (Rule 4)
+				current_thread->elapsed++;
+			}
+			
+			// Check if thread used up its allotment at this level
+			if (current_thread->elapsed >= QUANTUMS_PER_PRIORITY) {
+				// Demote to lower priority queue (Rule 4)
+				if (current_thread->priority < NUM_PRIORITIES - 1) {
+					current_thread->priority++;  // Move to lower priority
+				}
+				// Reset elapsed counter for the new level
+				current_thread->elapsed = 0;
+			}
+			
+			// Re-enqueue at current priority level
+			current_thread->thread_status = THREAD_READY;
+			enqueue(current_thread, current_thread->priority);
+		}
+		
+		// STEP 2: Check for priority boost (Rule 5)
+		quantums_since_reset++;
+		if (quantums_since_reset >= S) {
+			// Move all threads in all queues to priority 0
+			// First, reset elapsed for threads already at priority 0
+			queue_node *curr0 = priority_queues[0];
+			while (curr0 != NULL) {
+				curr0->thread->elapsed = 0;
+				curr0 = curr0->next;
+			}
+			
+			// Now move threads from lower priorities to priority 0
+			for (int level = 1; level < NUM_PRIORITIES; level++) {
+				queue_node *curr = priority_queues[level];
+				while (curr != NULL) {
+					queue_node *next_node = curr->next;
+					tcb *thread = curr->thread;
+					
+					// Reset thread priority and elapsed time
+					thread->priority = 0;
+					thread->elapsed = 0;
+					
+					// Move to top priority queue (creates new node)
+					enqueue(thread, 0);
+					
+					// Free the old node
+					free(curr);
+					
+					curr = next_node;
+				}
+				// Clear this priority level
+				priority_queues[level] = NULL;
+			}
+			quantums_since_reset = 0;
+		}
+		
+		// STEP 3: Pick next thread from highest priority queue (Rule 1 & 2)
+		tcb *next = dequeue();  // Already picks from highest priority!
+		
+		if (next == NULL) {
+			// No runnable threads - return to main
+			setcontext(&main_tcb->context);
+		}
+		
+		// Track first run time for statistics
+		if (!next->has_run) {
+			gettimeofday(&next->first_run_time, NULL);
+			next->has_run = 1;
+		}
+		
+		// STEP 4: Context switch and run selected thread
+		tot_cntx_switches++;
+		next->thread_status = THREAD_RUNNING;
+		current_thread = next;
+		
+		swapcontext(&scheduler_context, &next->context);
+		// When thread yields/exits, execution returns here and loop continues
+	}
 }
 
 /* Completely fair scheduling algorithm */
@@ -463,6 +680,8 @@ static void sched_cfs(){
 	// Step5: If the ideal time slice is smaller than minimum_granularity (MIN_SCHED_GRN), use MIN_SCHED_GRN instead
 	// Step5: Setup next time interrupt based on the time slice
 	// Step6: Run the selected thread
+
+
 }
 
 
@@ -488,6 +707,8 @@ static void schedule() {
 //DO NOT MODIFY THIS FUNCTION
 /* Function to print global statistics. Do not modify this function.*/
 void print_app_stats(void) {
+	double avg_turn_time = total_turnaround_time / total_threads_completed;
+	double avg_resp_time = total_response_time / total_threads_completed;
 
        fprintf(stderr, "Total context switches %ld \n", tot_cntx_switches);
        fprintf(stderr, "Average turnaround time %lf \n", avg_turn_time);

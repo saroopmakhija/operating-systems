@@ -21,6 +21,12 @@
 /* Time slice quantum in milliseconds */
 #define QUANTUM 10
 
+/*Number of quantums after which MLFQ resets*/
+#define S 10
+
+/*Number of quantums to run for per priority level*/
+#define QUANTUMS_PER_PRIORITY 8
+
 /* include lib header files that you need here: */
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -49,6 +55,20 @@ typedef struct TCB {
 	void * stack; // DUH STACK
 	size_t stack_size; // DUH STACK SIZE
 	void *return_value; // Return value of the thread
+
+	//time stats
+	struct timeval creation_time;
+	struct timeval first_run_time;
+	struct timeval completion_time;
+	int has_run;
+
+	//PSJF fields
+
+	int elapsed; 
+	// how many quantums has this thread run for
+	//more elapsed means it will run for a longer time (assumption from project pdf)
+
+	
 } tcb; 
 
 
