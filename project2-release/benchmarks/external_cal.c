@@ -145,6 +145,7 @@ int main(int argc, char **argv) {
 
 	// feel free to verify your answer here:
 	verify();
+	fprintf(stderr, "verified sum is: %d\n", sum);
 	
 	free(mem);
 	free(thread);
