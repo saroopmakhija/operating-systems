@@ -24,8 +24,10 @@
 /*Number of quantums after which MLFQ resets*/
 #define S 10
 
-/*Number of quantums to run for per priority level*/
-#define QUANTUMS_PER_PRIORITY 8
+#define NUM_PRIORITIES 10
+// Allotment in milliseconds for each priority level
+// Level 0 (highest): 10ms, Level 1: 20ms, Level 2: 40ms, etc.
+#define ALLOTMENT_AT_LEVEL(level) (QUANTUM * (1 << level))
 
 /* include lib header files that you need here: */
 #include <unistd.h>
@@ -67,6 +69,12 @@ typedef struct TCB {
 	int elapsed; 
 	// how many quantums has this thread run for
 	//more elapsed means it will run for a longer time (assumption from project pdf)
+
+	//MLFQ fields
+	int time_at_current_level;     // Milliseconds used at current priority level
+    int allotment_at_level;        // Total ms allowed at current level
+    struct timeval last_scheduled;  // When thread was last scheduled
+    int was_preempted;             // 1 if preempted by timer, 0 if yielded
 
 	
 } tcb; 

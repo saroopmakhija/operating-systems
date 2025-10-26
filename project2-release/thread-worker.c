@@ -25,7 +25,6 @@ int quantums_since_reset = 0;
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 // YOUR CODE HERE
 #define STACK_SIZE SIGSTKSZ
-#define NUM_PRIORITIES 10
 static worker_t next_thread_id = 1;
 static queue_node *priority_queues[NUM_PRIORITIES] = {NULL};
 static ucontext_t scheduler_context;
@@ -36,8 +35,86 @@ static tcb *current_thread = NULL;
 static tcb *main_tcb = NULL;
 static queue_node *all_threads_list = NULL;
 
-/* create a new thread */
 int worker_create(worker_t * thread, pthread_attr_t * attr, 
+                      void *(*function)(void*), void * arg) {
+
+       // - create Thread Control Block (TCB)
+       // - create and initialize the context of this worker thread
+       // - allocate space of stack for this thread to run
+       // after everything is set, push this thread into run queue and 
+       // - make it ready for the execution.
+
+       // YOUR CODE HERE
+	   if(!scheduler_initialized){
+		getcontext(&scheduler_context);
+		void *stack_ptr=malloc(STACK_SIZE);
+		if (!stack_ptr) {
+			perror("malloc(stack)");
+			exit(1);
+		}
+		scheduler_context.uc_stack.ss_sp=stack_ptr;
+		scheduler_context.uc_stack.ss_size=STACK_SIZE;
+		scheduler_context.uc_link=NULL;
+		getcontext(&main_context);
+		makecontext(&scheduler_context,schedule,0);
+		scheduler_initialized = 1;
+		setup_timer();
+	   }
+
+	   tcb *new_tcb = (tcb *)malloc(sizeof(tcb));
+	   if(!new_tcb) return -1;
+
+	   new_tcb->thread_id=next_thread_id++;
+	   new_tcb->thread_status= THREAD_READY;
+	   new_tcb->priority = 0;
+
+	   // Time statistics initialization
+	   gettimeofday(&new_tcb->creation_time, NULL);
+	   new_tcb->has_run = 0;
+	   
+	   // PSJF field
+	   new_tcb->elapsed = 0;
+
+	   // MLFQ fields initialization
+	   new_tcb->time_at_current_level = 0;
+	   new_tcb->allotment_at_level = ALLOTMENT_AT_LEVEL(0);
+	   new_tcb->last_scheduled.tv_sec = 0;
+	   new_tcb->last_scheduled.tv_usec = 0;
+	   new_tcb->was_preempted = 0;
+
+	   // Increment global counter for statistics
+	   total_threads_created++;
+
+	   //Allocate Stack
+	   new_tcb->stack = malloc(STACK_SIZE);
+	   if(!new_tcb->stack){
+		free(new_tcb);
+        return -1;
+	   }
+	   new_tcb->stack_size = STACK_SIZE;
+
+	   if (getcontext(&new_tcb->context) < 0) {
+        free(new_tcb->stack);
+        free(new_tcb);
+        return -1;
+    }
+
+	new_tcb->context.uc_stack.ss_sp = new_tcb->stack;
+    new_tcb->context.uc_stack.ss_size = STACK_SIZE;
+    new_tcb->context.uc_link = NULL;
+
+	makecontext(&new_tcb->context, (void (*)())function, 1, arg);
+	*thread = new_tcb->thread_id;
+
+	enqueue(new_tcb, 0); // switch to tcb->priority for part 2
+	if (next_thread_id == 1) {
+		swapcontext(&main_context, &scheduler_context);
+	}
+    return 0;
+};
+
+/* create a new thread */
+int worker_create_depricated(worker_t * thread, pthread_attr_t * attr, 
                       void *(*function)(void*), void * arg) {
 
        // - create Thread Control Block (TCB)
@@ -284,7 +361,7 @@ int worker_join(worker_t thread, void **value_ptr) {
 	// printf("[JOIN] ENTERED worker_join for thread %d\n", thread);
     fflush(stdout);
     if(current_thread == NULL){
-        swapcontext(&main_tcb->context, &scheduler_context);
+        swapcontext(&main_context, &scheduler_context);
     }
 
 	// Check if thread is trying to join itself
@@ -497,7 +574,7 @@ static void sched_fcfs() {
         
         if(next == NULL) {
             // printf("[SCHED] No threads ready, returning to main\n");
-            setcontext(&main_tcb->context);
+            setcontext(&main_context);
         }
         
         // printf("[SCHED] Scheduling thread %d\n", next->thread_id);
@@ -537,7 +614,7 @@ static void sched_psjf() {
         
         if (next_thread == NULL) {
             // No runnable threads - return to main
-            setcontext(&main_tcb->context);
+            setcontext(&main_context);
         }
         
         // Track first run time
@@ -559,110 +636,214 @@ static void sched_psjf() {
     }
 }
 
-/* Preemptive MLFQ scheduling algorithm */
-static void sched_mlfq() {
-	// - your own implementation of MLFQ
-	// (feel free to modify arguments and return types)
-
-	// YOUR CODE HERE
-
-	/* Step-by-step guidances */
-	// Step1: Calculate the time current thread actually ran
-	// Step2.1: If current thread uses up its allotment, demote it to the low priority queue (Rule 4)
-	// Step2.2: Otherwise, push the thread back to its origin queue
-	// Step3: If time period S passes, promote all threads to the topmost queue (Rule 5)
-	// Step4: Apply RR on the topmost queue with entries and run next thread
-
-	while(1) {
-		// STEP 1: Handle the thread that just ran
-		if (current_thread != NULL && 
-		    current_thread->thread_status != THREAD_BLOCKED && 
-		    current_thread->thread_status != TERMINATED) {
-			
-			// Rule 4: Count time at this level regardless of how CPU was given up
-			// Increment elapsed whether preempted or yielded
-			if (came_from_timer) {
-				// Thread was preempted - used full quantum
-				current_thread->elapsed++;
-			} else {
-				// Thread yielded voluntarily - still counts toward allotment (Rule 4)
-				current_thread->elapsed++;
-			}
-			
-			// Check if thread used up its allotment at this level
-			if (current_thread->elapsed >= QUANTUMS_PER_PRIORITY) {
-				// Demote to lower priority queue (Rule 4)
-				if (current_thread->priority < NUM_PRIORITIES - 1) {
-					current_thread->priority++;  // Move to lower priority
-				}
-				// Reset elapsed counter for the new level
-				current_thread->elapsed = 0;
-			}
-			
-			// Re-enqueue at current priority level
-			current_thread->thread_status = THREAD_READY;
-			enqueue(current_thread, current_thread->priority);
-		}
-		
-		// STEP 2: Check for priority boost (Rule 5)
-		quantums_since_reset++;
-		if (quantums_since_reset >= S) {
-			// Move all threads in all queues to priority 0
-			// First, reset elapsed for threads already at priority 0
-			queue_node *curr0 = priority_queues[0];
-			while (curr0 != NULL) {
-				curr0->thread->elapsed = 0;
-				curr0 = curr0->next;
-			}
-			
-			// Now move threads from lower priorities to priority 0
-			for (int level = 1; level < NUM_PRIORITIES; level++) {
-				queue_node *curr = priority_queues[level];
-				while (curr != NULL) {
-					queue_node *next_node = curr->next;
-					tcb *thread = curr->thread;
-					
-					// Reset thread priority and elapsed time
-					thread->priority = 0;
-					thread->elapsed = 0;
-					
-					// Move to top priority queue (creates new node)
-					enqueue(thread, 0);
-					
-					// Free the old node
-					free(curr);
-					
-					curr = next_node;
-				}
-				// Clear this priority level
-				priority_queues[level] = NULL;
-			}
-			quantums_since_reset = 0;
-		}
-		
-		// STEP 3: Pick next thread from highest priority queue (Rule 1 & 2)
-		tcb *next = dequeue();  // Already picks from highest priority!
-		
-		if (next == NULL) {
-			// No runnable threads - return to main
-			setcontext(&main_tcb->context);
-		}
-		
-		// Track first run time for statistics
-		if (!next->has_run) {
-			gettimeofday(&next->first_run_time, NULL);
-			next->has_run = 1;
-		}
-		
-		// STEP 4: Context switch and run selected thread
-		tot_cntx_switches++;
-		next->thread_status = THREAD_RUNNING;
-		current_thread = next;
-		
-		swapcontext(&scheduler_context, &next->context);
-		// When thread yields/exits, execution returns here and loop continues
-	}
+static void boost_all_threads() {
+    // Move all threads to highest priority (0)
+    for (int i = 1; i < NUM_PRIORITIES; i++) {
+        while (priority_queues[i] != NULL) {
+            queue_node *node = priority_queues[i];
+            priority_queues[i] = node->next;
+            tcb *thread = node->thread;
+            
+            // Reset thread's priority and time tracking
+            thread->priority = 0;
+            thread->time_at_current_level = 0;
+            thread->allotment_at_level = ALLOTMENT_AT_LEVEL(0);
+            
+            // Re-enqueue at highest priority
+            node->next = NULL;
+            if (priority_queues[0] == NULL) {
+                priority_queues[0] = node;
+            } else {
+                queue_node *temp = priority_queues[0];
+                while (temp->next != NULL) temp = temp->next;
+                temp->next = node;
+            }
+        }
+    }
 }
+
+static void sched_mlfq() {
+    static int total_quantums = 0;  // Track total quantums for Rule 5
+    struct timeval now;
+    
+    // Handle current thread that was just running
+    if (current_thread != NULL && 
+        current_thread->thread_status != TERMINATED &&
+        current_thread->thread_status != THREAD_BLOCKED) {
+        
+        // Calculate how long this thread actually ran
+        gettimeofday(&now, NULL);
+        int runtime_ms = 0;
+        if (current_thread->last_scheduled.tv_sec > 0) {
+            runtime_ms = (now.tv_sec - current_thread->last_scheduled.tv_sec) * 1000 +
+                        (now.tv_usec - current_thread->last_scheduled.tv_usec) / 1000;
+        }
+        
+        // Add to time at current level
+        current_thread->time_at_current_level += runtime_ms;
+        
+        // Check if we came from timer (ran full quantum) or yield
+        current_thread->was_preempted = (runtime_ms >= QUANTUM - 1); // Allow 1ms tolerance
+        
+        // Rule 4: Check if allotment exhausted at this level
+        if (current_thread->time_at_current_level >= current_thread->allotment_at_level) {
+            // Demote to next lower priority (higher number)
+            if (current_thread->priority < NUM_PRIORITIES - 1) {
+                current_thread->priority++;
+                current_thread->time_at_current_level = 0; // Reset time at new level
+                current_thread->allotment_at_level = ALLOTMENT_AT_LEVEL(current_thread->priority);
+            }
+        }
+        
+        // Set back to ready and enqueue
+        current_thread->thread_status = THREAD_READY;
+        enqueue(current_thread, current_thread->priority);
+    }
+    
+    // Rule 5: Priority boost after S quantums
+    total_quantums++;
+    if (total_quantums >= S) {
+        boost_all_threads();
+        total_quantums = 0;
+    }
+    
+    // Get next thread from highest priority queue
+    tcb *next_thread = dequeue();
+    
+    if (next_thread == NULL) {
+        // No runnable threads
+        if (current_thread == NULL) {
+            setcontext(&main_context);
+        }
+        return;
+    }
+    
+    // Track first run time
+    if (!next_thread->has_run) {
+        gettimeofday(&next_thread->first_run_time, NULL);
+        next_thread->has_run = 1;
+    }
+    
+    // Record when we're scheduling this thread
+    gettimeofday(&next_thread->last_scheduled, NULL);
+    
+    // Context switch
+    if (current_thread != next_thread) {
+        tot_cntx_switches++;
+    }
+    
+    // Set as running
+    next_thread->thread_status = THREAD_RUNNING;
+    current_thread = next_thread;
+    
+    // Switch to selected thread
+    setcontext(&next_thread->context);
+}
+
+/* Preemptive MLFQ scheduling algorithm */
+// static void sched_mlfq_depricated() {
+// 	// - your own implementation of MLFQ
+// 	// (feel free to modify arguments and return types)
+
+// 	// YOUR CODE HERE
+
+// 	/* Step-by-step guidances */
+// 	// Step1: Calculate the time current thread actually ran
+// 	// Step2.1: If current thread uses up its allotment, demote it to the low priority queue (Rule 4)
+// 	// Step2.2: Otherwise, push the thread back to its origin queue
+// 	// Step3: If time period S passes, promote all threads to the topmost queue (Rule 5)
+// 	// Step4: Apply RR on the topmost queue with entries and run next thread
+
+// 	while(1) {
+// 		// STEP 1: Handle the thread that just ran
+// 		if (current_thread != NULL && 
+// 		    current_thread->thread_status != THREAD_BLOCKED && 
+// 		    current_thread->thread_status != TERMINATED) {
+			
+// 			// Rule 4: Count time at this level regardless of how CPU was given up
+// 			// Increment elapsed whether preempted or yielded
+// 			if (came_from_timer) {
+// 				// Thread was preempted - used full quantum
+// 				current_thread->elapsed++;
+// 			} else {
+// 				// Thread yielded voluntarily - still counts toward allotment (Rule 4)
+// 				current_thread->elapsed++;
+// 			}
+			
+// 			// Check if thread used up its allotment at this level
+// 			if (current_thread->elapsed >= QUANTUMS_PER_PRIORITY) {
+// 				// Demote to lower priority queue (Rule 4)
+// 				if (current_thread->priority < NUM_PRIORITIES - 1) {
+// 					current_thread->priority++;  // Move to lower priority
+// 				}
+// 				// Reset elapsed counter for the new level
+// 				current_thread->elapsed = 0;
+// 			}
+			
+// 			// Re-enqueue at current priority level
+// 			current_thread->thread_status = THREAD_READY;
+// 			enqueue(current_thread, current_thread->priority);
+// 		}
+		
+// 		// STEP 2: Check for priority boost (Rule 5)
+// 		quantums_since_reset++;
+// 		if (quantums_since_reset >= S) {
+// 			// Move all threads in all queues to priority 0
+// 			// First, reset elapsed for threads already at priority 0
+// 			queue_node *curr0 = priority_queues[0];
+// 			while (curr0 != NULL) {
+// 				curr0->thread->elapsed = 0;
+// 				curr0 = curr0->next;
+// 			}
+			
+// 			// Now move threads from lower priorities to priority 0
+// 			for (int level = 1; level < NUM_PRIORITIES; level++) {
+// 				queue_node *curr = priority_queues[level];
+// 				while (curr != NULL) {
+// 					queue_node *next_node = curr->next;
+// 					tcb *thread = curr->thread;
+					
+// 					// Reset thread priority and elapsed time
+// 					thread->priority = 0;
+// 					thread->elapsed = 0;
+					
+// 					// Move to top priority queue (creates new node)
+// 					enqueue(thread, 0);
+					
+// 					// Free the old node
+// 					free(curr);
+					
+// 					curr = next_node;
+// 				}
+// 				// Clear this priority level
+// 				priority_queues[level] = NULL;
+// 			}
+// 			quantums_since_reset = 0;
+// 		}
+		
+// 		// STEP 3: Pick next thread from highest priority queue (Rule 1 & 2)
+// 		tcb *next = dequeue();  // Already picks from highest priority!
+		
+// 		if (next == NULL) {
+// 			// No runnable threads - return to main
+// 			setcontext(&main_tcb->context);
+// 		}
+		
+// 		// Track first run time for statistics
+// 		if (!next->has_run) {
+// 			gettimeofday(&next->first_run_time, NULL);
+// 			next->has_run = 1;
+// 		}
+		
+// 		// STEP 4: Context switch and run selected thread
+// 		tot_cntx_switches++;
+// 		next->thread_status = THREAD_RUNNING;
+// 		current_thread = next;
+		
+// 		swapcontext(&scheduler_context, &next->context);
+// 		// When thread yields/exits, execution returns here and loop continues
+// 	}
+// }
 
 /* Completely fair scheduling algorithm */
 static void sched_cfs(){
