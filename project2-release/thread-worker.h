@@ -18,7 +18,7 @@
 #define QUANTUM 10
 
 /*Number of quantums after which MLFQ resets*/
-#define S 40
+#define S 100
 
 #define NUM_PRIORITIES 10
 

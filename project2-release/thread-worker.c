@@ -1,3 +1,6 @@
+//netid: ssm229 Saroop Makhija
+//netid: mk2177 Aiman Koli
+//ilab: cd.cs.rutgers.edu
 #include "thread-worker.h"
 static void schedule();
 static void setup_timer();
@@ -28,6 +31,13 @@ static tcb *main_tcb = NULL;
 static queue_node *all_threads_list = NULL;
 static Heap cfs_heap;
 static int timeslice_ms;
+static sigset_t profmask;
+static inline void block_prof(void){ 
+	sigemptyset(&profmask); 
+	sigaddset(&profmask, SIGPROF); 
+	sigprocmask(SIG_BLOCK, &profmask, NULL); 
+}
+static inline void unblock_prof(void){ sigprocmask(SIG_UNBLOCK, &profmask, NULL); }
 
 // CFS specific variables
 static struct timeval cfs_thread_start_time;
@@ -388,6 +398,7 @@ void on_tick(){
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield() {
+	block_prof();
 	came_from_timer = 0;
 	swapcontext(&current_thread->context, &scheduler_context);
 	return 0;
@@ -395,6 +406,7 @@ int worker_yield() {
 
 /* terminate a thread */
 void worker_exit(void *value_ptr) {
+	block_prof();
 	if (value_ptr != NULL) {
         current_thread->return_value = value_ptr;
     }
@@ -497,6 +509,7 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 
 	while (mutex->locked && (mutex->owner_thread == NULL || *mutex->owner_thread != current_thread->thread_id)) {
 		current_thread->thread_status = THREAD_BLOCKED;
+	
 		queue_node *new_node = malloc(sizeof(queue_node));
 		new_node->thread = current_thread;
 		new_node->next = NULL;
@@ -504,23 +517,17 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
 			mutex->waiting_queue = new_node;
 		} else {
 			queue_node *curr = mutex->waiting_queue;
-			while (curr->next != NULL) {
-				curr = curr->next;
-			}
+			while (curr->next != NULL) curr = curr->next;
 			curr->next = new_node;
 		}
-		
-		sigprocmask(SIG_SETMASK, &oldset, NULL);
+	
 		swapcontext(&current_thread->context, &scheduler_context);
-		sigprocmask(SIG_BLOCK, &sigset, &oldset);
 	}
-
 	mutex->locked = 1;
 	mutex->owner_thread = &current_thread->thread_id;
-
 	sigprocmask(SIG_SETMASK, &oldset, NULL);
-	
-    return 0;
+	return 0;	
+
 };
 
 /* release the mutex lock */
@@ -635,6 +642,7 @@ static void sched_fcfs() {
 
 static void sched_psjf() {
     while (1) {
+		block_prof();
         if (current_thread != NULL &&
             current_thread->thread_status != TERMINATED &&
             current_thread->thread_status != THREAD_BLOCKED) {
@@ -647,6 +655,7 @@ static void sched_psjf() {
         tcb *next_thread = dequeue_min_elapsed();
         
         if (next_thread == NULL) {
+			unblock_prof();
             setcontext(&main_tcb->context);
         }
         
@@ -659,7 +668,7 @@ static void sched_psjf() {
         
         next_thread->thread_status = THREAD_RUNNING;
         current_thread = next_thread;
-        
+        unblock_prof();
         swapcontext(&scheduler_context, &next_thread->context);
     }
 }
@@ -739,7 +748,7 @@ static void sched_mlfq_deprecated() {
 static void sched_mlfq() {
     static int total_quantums = 0;  // Track total quantums for Rule 5
     struct timeval now;
-    
+    block_prof();
     // Handle current thread that was just running
     if (current_thread != NULL && 
         current_thread->thread_status != TERMINATED &&
@@ -786,6 +795,7 @@ static void sched_mlfq() {
     
     if (next_thread == NULL) {
         // No runnable threads
+		unblock_prof();
         if (current_thread == NULL) {
             setcontext(&main_tcb->context);
         }
@@ -811,6 +821,7 @@ static void sched_mlfq() {
     current_thread = next_thread;
     
     // Switch to selected thread
+	unblock_prof();
     setcontext(&next_thread->context);
 }
 
@@ -880,6 +891,7 @@ static void sched_cfs_dep(){
 
 static void sched_cfs() {
     while (1) {
+		block_prof();
         /* Step 1: Account the previously running thread and reinsert if still runnable */
         if (current_thread != NULL &&
             current_thread->thread_status != TERMINATED &&
@@ -897,6 +909,7 @@ static void sched_cfs() {
         tcb *next_thread = heap_extract_min(&cfs_heap);
         if (next_thread == NULL) {
             /* No runnable threads: return to main */
+			unblock_prof();
             setcontext(&main_tcb->context);
         }
 
@@ -926,7 +939,7 @@ static void sched_cfs() {
         tot_cntx_switches++;
         next_thread->thread_status = THREAD_RUNNING;
         current_thread = next_thread;
-
+		unblock_prof();
         swapcontext(&scheduler_context, &next_thread->context);
         /* Execution resumes here when the running thread yields/exits/is preempted */
     }
