@@ -17,7 +17,6 @@ void* simple_function(void* arg) {
         for(int j = 0; j < 1000000; j++) {
             x += j;
         }
-        printf(x);
     }
     
     printf("[THREAD %d] Finished\n", id);
