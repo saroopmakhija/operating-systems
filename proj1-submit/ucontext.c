@@ -45,6 +45,7 @@ static void init_context(ucontext_t *ctx, void **stack_ptr,
 
 
 int main(void) {
+    static int entered_main = 1;
     printf("In main: saving main context with getcontext\n");
 
     if (getcontext(&main_ctx) == -1) {
@@ -53,24 +54,29 @@ int main(void) {
     }
 
     //ADD YOUR CODE HERE
+    if (entered_main) {
+        entered_main = 0;
+        // Initialize worker context; link back to main
+        init_context(&worker1_ctx, &w1_stack, worker1, &main_ctx);
 
+        printf("In main: transferring control to worker using setcontext\n");
+        if (setcontext(&worker1_ctx) == -1) {
+            perror("setcontext(worker1)");
+            return 1;
+        }
 
-
-
-
-
-
-
-    // Initialize worker context; link back to main
-    init_context(&worker1_ctx, &w1_stack, worker1, &main_ctx);
-
-    printf("In main: transferring control to worker using setcontext\n");
-    if (setcontext(&worker1_ctx) == -1) {
-        perror("setcontext(worker1)");
+        // Unreachable: setcontext does not return
+        fprintf(stderr, "Error: setcontext returned unexpectedly\n");
         return 1;
     }
-
+        
+    
     // Unreachable: setcontext does not return
-    printf("In main: unreachable after setcontext\n");
+    printf("In main: back after worker returned via uc_link\n");
+
+
+    free(w1_stack);
+    w1_stack = NULL;
+    
     return 0;
 }
