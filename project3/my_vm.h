@@ -32,22 +32,29 @@
 #define VA_BITS        32u           // Simulated virtual address width
 #define PGSIZE         4096u         // Page size = 4 KB
 
+#define OFFSET_BITS 12u
+#define PTX_BITS 10u
+#define PDX_BITS 10u
+
+
 #define MAX_MEMSIZE    (1ULL << 32)  // Max virtual memory = 4 GB
 #define MEMSIZE        (1ULL << 30)  // Simulated physical memory = 1 GB
 
 
 //COMPLETE HERE
+#define PTE_VALID 1u
 
 // --- Constants for bit shifts and masks ---
-#define PDXSHIFT      /** TODO: number of bits to shift for directory index **/
-#define PTXSHIFT      /** TODO: number of bits to shift for table index **/
-#define PXMASK        /** TODO:  **/
-#define OFFMASK       /** TODO: **/
+#define PDXSHIFT      OFFSET_BITS + PTX_BITS
+#define PTXSHIFT      OFFSET_BITS
+#define PFNSHIFT      OFFSET_BITS
+#define PXMASK        (1 << 10) - 1 // 10 bits of 1s
+#define OFFMASK       (1 << OFFSET_BITS) - 1 // 12 bits of 1s
 
 // --- Macros to extract address components ---
-#define PDX(va)       /** TODO: compute directory index from virtual address **/
-#define PTX(va)       /** TODO: compute table index from virtual address **/
-#define OFF(va)       /** TODO: compute page offset from virtual address **/
+#define PDX(va)       (VA2U(va) >> PDXSHIFT) & PXMASK
+#define PTX(va)       (VA2U(va) >> PTXSHIFT) & PXMASK
+#define OFF(va)       (VA2U(va) & OFFMASK)
 
 // -----------------------------------------------------------------------------
 //  Type Definitions
@@ -98,6 +105,19 @@ extern struct tlb tlb_store;
 
 // -----------------------------------------------------------------------------
 //  Function Prototypes
+// -----------------------------------------------------------------------------
+
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+void bitmap_set(unsigned char *bitmap, int page_index);
+void bitmap_clear(unsigned char *bitmap, int page_index);
+void bitmap_get(unsigned char *bitmap, int page_index);
+
+// -----------------------------------------------------------------------------
+// Main Functions
 // -----------------------------------------------------------------------------
 
 /*

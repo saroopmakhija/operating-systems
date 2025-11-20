@@ -50,8 +50,6 @@ void bitmap_get(unsigned char *bitmap, int page_index) {
 
 
 
-
-
 void set_physical_mem(void) {
     // TODO: Implement memory allocation for simulated physical memory.
     // Use 32-bit values for sizes, page counts, and offsets.
@@ -168,13 +166,37 @@ pte_t *translate(pde_t *pgdir, void *va)
     // for the page directory, page table, and offset.
     // Return the corresponding PTE if found.
 
+    //saroop add the cahce stuff here - this is without cache implementation
+
     if (!pgdir || !va) {
         fprintf(stderr, "translate: pgdir or va is NULL\n");
         return NULL;
     }
 
+    int pdx = PDX(va);
+    int ptx = PTX(va);
+    int off = OFF(va);
 
-
+    pthread_mutex_lock(&vm_mutex);
+    pde_t pde = pgdir[pdx]; // get the page directory entry
+    if (!pde || !(pde & PTE_VALID) || pde==0) {
+        fprintf(stderr, "translate: page directory entry not found\n");
+        pthread_mutex_unlock(&vm_mutex);
+        return NULL;
+    }
+    uintptr_t pfn = pde >> PFNSHIFT;
+    pte_t *page_table = (pte_t *)physical_memory + (pfn * PGSIZE);
+    pte_t *pte_ptr = &page_table[ptx];
+    
+    // Check if page is mapped
+    if (*pte_ptr == 0 || !(*pte_ptr & PTE_VALID)) {
+        pthread_mutex_unlock(&vm_mutex);
+        perror("translate: page is not mapped");
+        return NULL;
+    }
+    
+    pthread_mutex_unlock(&vm_mutex);
+    return pte_ptr;
 }
 
 /*
