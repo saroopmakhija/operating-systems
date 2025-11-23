@@ -69,7 +69,7 @@ typedef uint32_t pde_t;       // Page directory entry
 //  Page Table Flags (Students fill as needed)
 // -----------------------------------------------------------------------------
 
-#define PFN_SHIFT     /** TODO: number of bits to shift**/
+#define PFN_SHIFT     OFFSET_BITS  // Number of bits to shift for physical frame number
 
 // -----------------------------------------------------------------------------
 //  Address Conversion Helpers (Provided)
@@ -114,7 +114,7 @@ extern struct tlb tlb_store;
 
 void bitmap_set(unsigned char *bitmap, int page_index);
 void bitmap_clear(unsigned char *bitmap, int page_index);
-void bitmap_get(unsigned char *bitmap, int page_index);
+int bitmap_get(unsigned char *bitmap, int page_index);
 
 // -----------------------------------------------------------------------------
 // Main Functions
