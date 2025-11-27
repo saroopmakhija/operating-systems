@@ -21,7 +21,7 @@ static uint32_t total_physical_pages;
 static uint32_t total_virtual_pages;
 static uint32_t bitmap_size;
 
-struct tlb tlb_store; // Placeholder for your TLB structure
+struct tlb tlb_store[TLB_ENTRIES]; // Placeholder for your TLB structure
 
 // Optional counters for TLB statistics
 static unsigned long long tlb_lookups = 0;
@@ -142,12 +142,72 @@ void set_physical_mem(void) {
  *   0  -> Success (translation successfully added)
  *  -1  -> Failure (e.g., TLB full or invalid input)
  */
-int TLB_add(void *va, void *pa)
-{
-    // TODO: Implement TLB insertion logic.
-    return -1; // Currently returns failure placeholder.
-}
+ int TLB_add(void *va, void *pa)
+ {
+     if (!va || !pa || !is_initialized) {
+         return -1;
+     }
+ 
+     vaddr32_t vaddr = VA2U(va);
+     // physical offset from start of simulated RAM
+     paddr32_t paddr = (paddr32_t)((uintptr_t)pa - (uintptr_t)physical_memory);
+ 
+     uint32_t vpn   = vaddr >> OFFSET_BITS;      // virtual page number
+     uint32_t pfn   = paddr >> OFFSET_BITS;      // physical frame number
+     uint32_t index = vpn % TLB_ENTRIES;         // direct-mapped index
+ 
+     pthread_mutex_lock(&vm_mutex);
+ 
+     tlb_store[index].vpn   = vpn;
+     tlb_store[index].pfn   = pfn;
+     tlb_store[index].valid = true;
+ 
+     pthread_mutex_unlock(&vm_mutex);
+ 
+     return 0;
+ }
 
+
+ // get entire physical address page base + offset
+ static void *get_physical_addr(void *va){
+    if (!is_initialized || !va) return NULL;
+
+    void *pa = TLB_check(va);  
+
+    if (pa) return pa;
+    
+    vaddr32_t vaddr = VA2U(va);
+    uint32_t pdx    = PDX(va);
+    uint32_t ptx    = PTX(va);
+    uint32_t offset = OFF(va);
+
+    pthread_mutex_lock(&vm_mutex);
+
+    pde_t pde = page_directory[pdx];
+    if (!(pde & PTE_VALID)) {
+        pthread_mutex_unlock(&vm_mutex);
+        return NULL;
+    }
+
+    uint32_t pt_pfn = pde >> PFN_SHIFT;  
+    pte_t *page_table = (pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
+
+    pte_t pte = page_table[ptx];
+    if (!(pte & PTE_VALID)) {
+        pthread_mutex_unlock(&vm_mutex);
+        return NULL;
+    }
+    uint32_t data_pfn  = pte >> PFN_SHIFT;
+    void *page_base    = (char *)physical_memory + data_pfn * PGSIZE;
+
+    TLB_add(va, page_base);
+
+    pthread_mutex_unlock(&vm_mutex);
+
+    return (char *)page_base + offset; 
+
+ }
+ 
 /*
  * TLB_check()
  * -----------
@@ -157,10 +217,33 @@ int TLB_add(void *va, void *pa)
  *   Pointer to the corresponding page table entry (PTE) if found.
  *   NULL if the translation is not found (TLB miss).
  */
-pte_t *TLB_check(void *va)
+void *TLB_check(void *va)
 {
-    // TODO: Implement TLB lookup.
-    return NULL; // Currently returns TLB miss.
+ 
+    if (!va || !is_initialized) {
+        return NULL;
+    }
+
+    vaddr32_t vaddr = VA2U(va);
+    uint32_t vpn = vaddr >> OFFSET_BITS;
+    uint32_t index = vpn % TLB_ENTRIES;
+
+    pthread_mutex_lock(&vm_mutex);
+    tlb_lookups++;
+
+    if (tlb_store[index].valid && tlb_store[index].vpn == vpn) {
+        uint32_t pfn = tlb_store[index].pfn;
+        uint32_t offset = OFF(va);
+        void *pa = (char *)physical_memory + (pfn * PGSIZE) + offset;
+        pthread_mutex_unlock(&vm_mutex);
+        return pa;
+    }
+
+    // TLB MISS
+    tlb_misses++;
+    pthread_mutex_unlock(&vm_mutex);
+    return NULL;
+
 }
 
 /*
@@ -174,7 +257,12 @@ void print_TLB_missrate(void)
 {
     double miss_rate = 0.0;
     // TODO: Calculate miss rate as (tlb_misses / tlb_lookups).
-    fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
+    if (tlb_lookups == 0) {
+        miss_rate = 0.0;
+    } else {
+        miss_rate = (double)tlb_misses / (double)tlb_lookups;
+    }
+    printf("TLB miss rate %lf \n", miss_rate);
 }
 
 // -----------------------------------------------------------------------------
@@ -511,17 +599,18 @@ int put_data(void *va, void *val, int size)
     pthread_mutex_lock(&vm_mutex);
     
     while (remaining > 0) {
+        void *pa = get_physical_addr(U2VA(current_va));
         // Translate virtual address to get PTE
-        pte_t *pte = translate(page_directory, U2VA(current_va));
+        // pte_t *pte = translate(page_directory, U2VA(current_va));
         
-        if (!pte) {
+        if (!pa) {
             fprintf(stderr, "Error: Virtual address %p not mapped\n", U2VA(current_va));
             pthread_mutex_unlock(&vm_mutex);
             return -1;
         }
         
-        // Get physical frame number
-        uint32_t pfn = *pte >> PFN_SHIFT;
+        // // Get physical frame number
+        // uint32_t pfn = *pte >> PFN_SHIFT;
         
         // Calculate offset within the page
         uint32_t page_offset = OFF(U2VA(current_va));
@@ -533,10 +622,10 @@ int put_data(void *va, void *val, int size)
         }
         
         // Calculate physical address
-        void *physical_addr = (char *)physical_memory + (pfn * PGSIZE) + page_offset;
+        // void *physical_addr = (char *)physical_memory + (pfn * PGSIZE) + page_offset;
         
         // Copy data
-        memcpy(physical_addr, (char *)val + src_offset, bytes_in_page);
+        memcpy(pa, (char *)val + src_offset, bytes_in_page);
         
         // Update counters
         remaining -= bytes_in_page;
@@ -570,17 +659,18 @@ void get_data(void *va, void *val, int size)
     pthread_mutex_lock(&vm_mutex);
     
     while (remaining > 0) {
-        // Translate virtual address to get PTE
-        pte_t *pte = translate(page_directory, U2VA(current_va));
-        
-        if (!pte) {
+        // // Translate virtual address to get PTE
+        // pte_t *pte = translate(page_directory, U2VA(current_va));
+        void *pa = get_physical_addr(U2VA(current_va));
+
+        if (!pa) {
             fprintf(stderr, "Error: Virtual address %p not mapped\n", U2VA(current_va));
             pthread_mutex_unlock(&vm_mutex);
             return;
         }
         
         // Get physical frame number
-        uint32_t pfn = *pte >> PFN_SHIFT;
+        // uint32_t pfn = *pte >> PFN_SHIFT;
         
         // Calculate offset within the page
         uint32_t page_offset = OFF(U2VA(current_va));
@@ -592,10 +682,10 @@ void get_data(void *va, void *val, int size)
         }
         
         // Calculate physical address
-        void *physical_addr = (char *)physical_memory + (pfn * PGSIZE) + page_offset;
+        // void *physical_addr = (char *)physical_memory + (pfn * PGSIZE) + page_offset;
         
         // Copy data
-        memcpy((char *)val + dst_offset, physical_addr, bytes_in_page);
+        memcpy((char *)val + dst_offset, pa, bytes_in_page);
         
         // Update counters
         remaining -= bytes_in_page;

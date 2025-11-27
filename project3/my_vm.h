@@ -99,10 +99,13 @@ struct tlb {
      *   bool valid;
      *   uint64_t last_used;
      */
+     uint32_t vpn;
+     uint32_t pfn;
+     bool valid;
+    
 };
 
-extern struct tlb tlb_store;
-
+// extern struct tlb_entry tlb_store[];
 // -----------------------------------------------------------------------------
 //  Function Prototypes
 // -----------------------------------------------------------------------------
@@ -136,7 +139,7 @@ int TLB_add(void *va, void *pa);
  * Checks if a virtual address translation exists in the TLB.
  * Return: pointer to PTE on hit; NULL on miss.
  */
-pte_t *TLB_check(void *va);
+void *TLB_check(void *va);
 
 /*
  * Calculates and prints the TLB miss rate.
