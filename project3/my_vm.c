@@ -15,6 +15,7 @@ static unsigned char *virtual_bitmap = NULL;   // Track virtual pages
 static bool is_initialized = false;
 static pthread_mutex_t vm_mutex;
 static pthread_mutexattr_t vm_mutex_attr;
+static pthread_once_t vm_init_once = PTHREAD_ONCE_INIT;
 
 // Memory configuration
 static uint32_t total_physical_pages;
@@ -76,18 +77,22 @@ void set_physical_mem(void) {
     // Use 32-bit values for sizes, page counts, and offsets.
     
     // Initialize recursive mutex on first call
-    if (!is_initialized) {
-        pthread_mutexattr_init(&vm_mutex_attr);
-        pthread_mutexattr_settype(&vm_mutex_attr, PTHREAD_MUTEX_RECURSIVE);
-        pthread_mutex_init(&vm_mutex, &vm_mutex_attr);
-    }
+    // if (!is_initialized) {
+    //     pthread_mutexattr_init(&vm_mutex_attr);
+    //     pthread_mutexattr_settype(&vm_mutex_attr, PTHREAD_MUTEX_RECURSIVE);
+    //     pthread_mutex_init(&vm_mutex, &vm_mutex_attr);
+    // }
+
+    pthread_mutexattr_init(&vm_mutex_attr);
+    pthread_mutexattr_settype(&vm_mutex_attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&vm_mutex, &vm_mutex_attr);
     
-    pthread_mutex_lock(&vm_mutex);
-    if (is_initialized) {
-        fprintf(stderr, "physical memory already initialized\n");
-        pthread_mutex_unlock(&vm_mutex);
-        return;
-    }
+    // pthread_mutex_lock(&vm_mutex);
+    // if (is_initialized) {
+    //     fprintf(stderr, "physical memory already initialized\n");
+    //     pthread_mutex_unlock(&vm_mutex);
+    //     return;
+    // }
     // Calculate page counts
     total_physical_pages = MEMSIZE / PGSIZE;  // 1GB / 4KB = 262,144 pages
     total_virtual_pages = MAX_MEMSIZE / PGSIZE;  // 4GB / 4KB = 1,048,576 pages
@@ -118,7 +123,7 @@ void set_physical_mem(void) {
     bitmap_set(virtual_bitmap, 0);
 
     is_initialized = true;
-    pthread_mutex_unlock(&vm_mutex);
+    // pthread_mutex_unlock(&vm_mutex);
 
     printf("Virtual memory initialized:\n");
     printf("  Physical memory: %u pages (%llu MB)\n", 
@@ -253,17 +258,15 @@ void *TLB_check(void *va)
  *
  * Return value: None.
  */
-void print_TLB_missrate(void)
-{
-    double miss_rate = 0.0;
-    // TODO: Calculate miss rate as (tlb_misses / tlb_lookups).
-    if (tlb_lookups == 0) {
-        miss_rate = 0.0;
-    } else {
-        miss_rate = (double)tlb_misses / (double)tlb_lookups;
-    }
-    printf("TLB miss rate %lf \n", miss_rate);
-}
+ void print_TLB_missrate(void)
+ {
+     double miss_rate = 0.0;
+     if (tlb_lookups > 0) {
+         miss_rate = (double)tlb_misses / (double)tlb_lookups;
+     }
+     printf("TLB miss rate %lf\n", miss_rate);
+ }
+ 
 
 // -----------------------------------------------------------------------------
 // Page Table
@@ -295,7 +298,7 @@ pte_t *translate(pde_t *pgdir, void *va)
 
     int pdx = PDX(va);
     int ptx = PTX(va);
-    int off = OFF(va);
+    //int off = OFF(va);
 
     pthread_mutex_lock(&vm_mutex);
     pde_t pde = pgdir[pdx]; // get the page directory entry
@@ -304,8 +307,10 @@ pte_t *translate(pde_t *pgdir, void *va)
         pthread_mutex_unlock(&vm_mutex);
         return NULL;
     }
-    uintptr_t pfn = pde >> PFNSHIFT;
-    pte_t *page_table = (pte_t *)physical_memory + (pfn * PGSIZE);
+    
+    
+    uintptr_t pt_pfn = pde >> PFNSHIFT;
+    pte_t *page_table =(pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
     pte_t *pte_ptr = &page_table[ptx];
     
     // Check if page is mapped
@@ -362,12 +367,13 @@ pte_t *translate(pde_t *pgdir, void *va)
         
         // Store page table address in page directory entry
         // Convert physical address to offset from physical_memory base
-        paddr32_t pt_offset = (paddr32_t)(uintptr_t)page_table - (paddr32_t)(uintptr_t)physical_memory;
-        *pde_ptr = (pt_offset >> OFFSET_BITS) | PTE_VALID;
+        paddr32_t pt_offset = (paddr32_t)((uintptr_t)page_table - (uintptr_t)physical_memory);
+        uint32_t pfn = pt_offset >> OFFSET_BITS;
+        *pde_ptr = (pfn << PFN_SHIFT) | PTE_VALID;
     } else {
         // Page table exists, retrieve it
-        uint32_t pt_pfn = *pde_ptr >> OFFSET_BITS;
-        page_table = (pte_t *)((char *)physical_memory + (pt_pfn * PGSIZE));
+        uint32_t pfn = *pde_ptr >> PFN_SHIFT;
+        page_table = (pte_t *)((char *)physical_memory + pfn * PGSIZE);
     }
     
     // Get physical frame number
@@ -452,9 +458,10 @@ void *get_next_avail(int num_pages)
 void *n_malloc(unsigned int num_bytes)
 {
     // Initialize on first call
-    if (!is_initialized) {
-        set_physical_mem();
-    }
+    // if (!is_initialized) {
+    //     set_physical_mem();
+    // }
+    pthread_once(&vm_init_once, set_physical_mem);
     
     if (num_bytes == 0) {
         return NULL;
@@ -508,8 +515,8 @@ void *n_malloc(unsigned int num_bytes)
     
     pthread_mutex_unlock(&vm_mutex);
     
-    printf("n_malloc: Allocated %d bytes (%d pages) at VA %p\n", 
-           num_bytes, num_pages, va_base);
+   // printf("n_malloc: Allocated %d bytes (%d pages) at VA %p\n", 
+     //      num_bytes, num_pages, va_base);
     
     return va_base;
 }
@@ -567,8 +574,8 @@ void n_free(void *va, int size)
     
     pthread_mutex_unlock(&vm_mutex);
     
-    printf("n_free: Freed %d bytes (%d pages) at VA %p\n", 
-           size, num_pages, va);
+   // printf("n_free: Freed %d bytes (%d pages) at VA %p\n", 
+       //    size, num_pages, va);
 }
 
 // -----------------------------------------------------------------------------

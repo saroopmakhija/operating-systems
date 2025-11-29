@@ -10,18 +10,7 @@
 /* ============================================================================
  *  Virtual Memory Simulation Header
  * ============================================================================
- *  This header defines constants, data types, and function prototypes
- *  for implementing a simulated 32-bit virtual memory system.
- *
- *  Students will:
- *   - Fill in missing constants and macros for address translation.
- *   - Define TLB structure and page table entry fields.
- *   - Implement all declared functions in my_vm.c.
- *
- *  Return conventions (used across functions):
- *    0   → Success
- *   -1   → Failure
- *   NULL → Translation or lookup not found
+ *  32-bit virtual address space, 2-level page table, software TLB.
  * ============================================================================
  */
 
@@ -30,31 +19,59 @@
 // -----------------------------------------------------------------------------
 
 #define VA_BITS        32u           // Simulated virtual address width
-#define PGSIZE         4096u         // Page size = 4 KB
 
-#define OFFSET_BITS 12u
-#define PTX_BITS 10u
-#define PDX_BITS 10u
-
+// You will change this when testing different page sizes (4K–64K)
+#define PGSIZE         65536u         // Page size in bytes
 
 #define MAX_MEMSIZE    (1ULL << 32)  // Max virtual memory = 4 GB
 #define MEMSIZE        (1ULL << 30)  // Simulated physical memory = 1 GB
 
+/* Page size–dependent split:
+ *   VA = [ PDX_BITS | PTX_BITS | OFFSET_BITS ] = 32 bits
+ * We support: 4KB, 8KB, 16KB, 32KB, 64KB
+ */
+#if   PGSIZE == 4096u       /* 4KB  */
+    #define OFFSET_BITS  12u
+    #define PTX_BITS     10u
+    #define PDX_BITS     10u
+#elif PGSIZE == 8192u       /* 8KB  */
+    #define OFFSET_BITS  13u
+    #define PTX_BITS      9u
+    #define PDX_BITS     10u
+#elif PGSIZE == 16384u      /* 16KB */
+    #define OFFSET_BITS  14u
+    #define PTX_BITS      9u
+    #define PDX_BITS      9u
+#elif PGSIZE == 32768u      /* 32KB */
+    #define OFFSET_BITS  15u
+    #define PTX_BITS      8u
+    #define PDX_BITS      9u
+#elif PGSIZE == 65536u      /* 64KB */
+    #define OFFSET_BITS  16u
+    #define PTX_BITS      8u
+    #define PDX_BITS      8u
+#else
+    #error "Unsupported PGSIZE. Supported: 4KB, 8KB, 16KB, 32KB, 64KB."
+#endif
 
-//COMPLETE HERE
-#define PTE_VALID 1u
+// Valid-bit flag for PTE/PDE (LSB = 1 means “valid mapping”)
+#define PTE_VALID      1u
 
 // --- Constants for bit shifts and masks ---
-#define PDXSHIFT      OFFSET_BITS + PTX_BITS
-#define PTXSHIFT      OFFSET_BITS
-#define PFNSHIFT      OFFSET_BITS
-#define PXMASK        (1 << 10) - 1 // 10 bits of 1s
-#define OFFMASK       (1 << OFFSET_BITS) - 1 // 12 bits of 1s
+#define PTXSHIFT       (OFFSET_BITS)
+#define PDXSHIFT       (OFFSET_BITS + PTX_BITS)
 
-// --- Macros to extract address components ---
-#define PDX(va)       (VA2U(va) >> PDXSHIFT) & PXMASK
-#define PTX(va)       (VA2U(va) >> PTXSHIFT) & PXMASK
-#define OFF(va)       (VA2U(va) & OFFMASK)
+#define OFFMASK        ((1u << OFFSET_BITS) - 1u)
+#define PTXMASK        ((1u << PTX_BITS)   - 1u)
+#define PDXMASK        ((1u << PDX_BITS)   - 1u)
+
+// Some of your old code used PXMASK; keep it as PTXMASK for compatibility if needed
+#define PXMASK         PTXMASK
+
+// Physical frame number shift (for PTE/PDE PFN fields)
+#define PFN_SHIFT      (OFFSET_BITS)
+// Keep old name for any existing code that uses PFNSHIFT
+#define PFNSHIFT       PFN_SHIFT
 
 // -----------------------------------------------------------------------------
 //  Type Definitions
@@ -66,61 +83,44 @@ typedef uint32_t pte_t;       // Page table entry
 typedef uint32_t pde_t;       // Page directory entry
 
 // -----------------------------------------------------------------------------
-//  Page Table Flags (Students fill as needed)
-// -----------------------------------------------------------------------------
-
-#define PFN_SHIFT     OFFSET_BITS  // Number of bits to shift for physical frame number
-
-// -----------------------------------------------------------------------------
 //  Address Conversion Helpers (Provided)
 // -----------------------------------------------------------------------------
 
-static inline vaddr32_t VA2U(void *va)     { return (vaddr32_t)(uintptr_t)va; }
-static inline void*     U2VA(vaddr32_t u)  { return (void*)(uintptr_t)u; }
+static inline vaddr32_t VA2U(void *va)    { return (vaddr32_t)(uintptr_t)va; }
+static inline void*     U2VA(vaddr32_t u) { return (void*)(uintptr_t)u; }
+
+// --- Macros to extract address components ---
+#define PDX(va)        ((VA2U(va) >> PDXSHIFT) & PDXMASK)
+#define PTX(va)        ((VA2U(va) >> PTXSHIFT) & PTXMASK)
+#define OFF(va)        ( VA2U(va) & OFFMASK )
 
 // -----------------------------------------------------------------------------
 //  TLB Configuration
 // -----------------------------------------------------------------------------
 
-#define TLB_ENTRIES   512   // Default number of TLB entries
+#define TLB_ENTRIES    512   // Default number of TLB entries (can be changed)
 
 struct tlb {
-    /*
-     * TODO: Define the TLB structure.
-     * Each entry typically includes:
-     *  - Virtual Page Number (VPN)
-     *  - Physical Frame Number (PFN)
-     *  - Valid bit
-     *  - Optional timestamp for replacement policy (e.g., LRU)
-     *
-     * Example:
-     *   uint32_t vpn;
-     *   uint32_t pfn;
-     *   bool valid;
-     *   uint64_t last_used;
-     */
-     uint32_t vpn;
-     uint32_t pfn;
-     bool valid;
-    
+    // Direct-mapped TLB entry:
+    //   vpn   : virtual page number
+    //   pfn   : physical frame number
+    //   valid : entry is usable when true
+    uint32_t vpn;
+    uint32_t pfn;
+    bool     valid;
+    // Optional: you could add uint64_t last_used; for LRU, but not required
 };
 
-// extern struct tlb_entry tlb_store[];
 // -----------------------------------------------------------------------------
-//  Function Prototypes
-// -----------------------------------------------------------------------------
-
-
-// -----------------------------------------------------------------------------
-// Helper Functions
+//  Helper Functions
 // -----------------------------------------------------------------------------
 
-void bitmap_set(unsigned char *bitmap, int page_index);
-void bitmap_clear(unsigned char *bitmap, int page_index);
-int bitmap_get(unsigned char *bitmap, int page_index);
+void bitmap_set   (unsigned char *bitmap, int page_index);
+void bitmap_clear (unsigned char *bitmap, int page_index);
+int  bitmap_get   (unsigned char *bitmap, int page_index);
 
 // -----------------------------------------------------------------------------
-// Main Functions
+//  Main API Functions
 // -----------------------------------------------------------------------------
 
 /*
@@ -130,14 +130,18 @@ int bitmap_get(unsigned char *bitmap, int page_index);
 void set_physical_mem(void);
 
 /*
- * Adds a new virtual-to-physical translation to the TLB.
+ * Adds a new virtual-to-physical-page translation to the TLB.
+ *   va: virtual address (any address within the page)
+ *   pa: physical address of the start of that page (page base)
  * Return: 0 on success, -1 on failure.
  */
 int TLB_add(void *va, void *pa);
 
 /*
  * Checks if a virtual address translation exists in the TLB.
- * Return: pointer to PTE on hit; NULL on miss.
+ * Return:
+ *   - On hit : physical address (void*) corresponding to this VA
+ *   - On miss: NULL
  */
 void *TLB_check(void *va);
 
@@ -148,13 +152,17 @@ void *TLB_check(void *va);
 void print_TLB_missrate(void);
 
 /*
- * Translates a virtual address to a physical address.
+ * Translates a virtual address to a PTE* by walking the 2-level page table.
+ * (TLB not used here directly; your higher-level code can use TLB first.)
  * Return: pointer to PTE if successful; NULL otherwise.
  */
 pte_t *translate(pde_t *pgdir, void *va);
 
 /*
- * Creates a mapping between a virtual and a physical page.
+ * Creates a mapping between a virtual page and a physical page.
+ *   pgdir : pointer to top-level page directory
+ *   va    : virtual address (page-aligned base of VA page)
+ *   pa    : physical address (page-aligned base of PA frame)
  * Return: 0 on success, -1 on failure.
  */
 int map_page(pde_t *pgdir, void *va, void *pa);
@@ -179,7 +187,7 @@ void n_free(void *va, int size);
 
 /*
  * Copies data from a user buffer into simulated physical memory
- * through a virtual address.
+ * through a virtual address (handles page crossing).
  * Return: 0 on success, -1 on failure.
  */
 int put_data(void *va, void *val, int size);
@@ -198,4 +206,3 @@ void get_data(void *va, void *val, int size);
 void mat_mult(void *mat1, void *mat2, int size, void *answer);
 
 #endif // MY_VM_H_INCLUDED
-
