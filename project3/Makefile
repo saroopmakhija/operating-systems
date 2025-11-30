@@ -1,28 +1,9 @@
-# CC = gcc
-# CFLAGS = -g -c #-m32
-# AR = ar -rc
-# RANLIB = ranlib
-
-# all: my_vm.a
-
-# my_vm.a: my_vm.o
-# 	$(AR) libmy_vm.a my_vm.o
-# 	$(RANLIB) libmy_vm.a
-
-# my_vm.o: my_vm.h
-
-# 	$(CC)	$(CFLAGS)  my_vm.c
-
-# clean:
-# 	rm -rf *.o *.a
-
-
 CC     = gcc
 CFLAGS = -g -c
 AR     = ar -rc
 RANLIB = ranlib
 
-all: my_vm.a my_vm64.a test_vm stress_test64
+all: my_vm.a my_vm64.a my_vm3.a test_vm stress_test64
 
 # 32-bit style library (your original project)
 my_vm.a: my_vm.o
@@ -39,6 +20,14 @@ my_vm64.a: my_vm64.o
 
 my_vm64.o: my_vm64.c my_vm64.h
 	$(CC) $(CFLAGS) my_vm64.c
+
+# Third variant library
+my_vm3.a: my_vm3.o
+	$(AR) libmy_vm3.a my_vm3.o
+	$(RANLIB) libmy_vm3.a
+
+my_vm3.o: my_vm3.c my_vm3.h
+	$(CC) $(CFLAGS) my_vm3.c
 
 # Existing 32-bit test program
 test_vm: test_vm.c my_vm.a
