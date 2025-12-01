@@ -8,26 +8,27 @@
 // Global Declarations (optional)
 // -----------------------------------------------------------------------------
 
-static void *physical_memory = NULL;      // Simulated physical RAM
-static pde_t *page_directory = NULL;      // Top-level page directory
-static unsigned char *physical_bitmap = NULL;  // Track physical pages
-static unsigned char *virtual_bitmap = NULL;   // Track virtual pages
-static bool is_initialized = false;
+static void *physical_memory      = NULL;   // Our simulated physical RAM
+static pde_t *page_directory      = NULL;   // Top-level page directory
+static unsigned char *physical_bitmap = NULL;
+static unsigned char *virtual_bitmap  = NULL;
+
+static bool is_initialized        = false;
+
+
 static pthread_mutex_t vm_mutex;
-static pthread_mutexattr_t vm_mutex_attr;
+static pthread_mutex_t tlb_mutex;
+
 static pthread_once_t vm_init_once = PTHREAD_ONCE_INIT;
 
 // Memory configuration
 static uint32_t total_physical_pages;
 static uint32_t total_virtual_pages;
-static uint32_t bitmap_size;
 
-struct tlb tlb_store[TLB_ENTRIES]; // Placeholder for your TLB structure
+struct tlb tlb_store[TLB_ENTRIES];
 
-// Optional counters for TLB statistics
 static unsigned long long tlb_lookups = 0;
 static unsigned long long tlb_misses  = 0;
-
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
@@ -35,10 +36,8 @@ static unsigned long long tlb_misses  = 0;
 
 void bitmap_set(unsigned char *bitmap, int page_index) {
     bitmap[page_index / 8] |= (1 << (page_index % 8));
-    //first get the byte of the index
-    //then get the bit in that with remainder
-    //bit shift by the remainder and 'or add' to byte
-    //edits byte in place
+    // Find the right byte, then the bit within it
+    // Shift and OR it in to mark as used
 }
 
 void bitmap_clear(unsigned char *bitmap, int page_index) {
@@ -49,7 +48,7 @@ int bitmap_get(unsigned char *bitmap, int page_index) {
     return (bitmap[page_index / 8] >> (page_index % 8)) & 1;
 }
 
-// Find first free bit, return index or -1
+// Finds first free bit in bitmap, returns index or -1 if none found
 static int bitmap_find_free(unsigned char *bitmap, uint32_t num_bits) {
     for (uint32_t i = 0; i < num_bits; i++) {
         if (!bitmap_get(bitmap, i)) {
@@ -72,66 +71,64 @@ static void *alloc_physical_page(void);
  * Errors should be handled internally (e.g., failed allocation).
  */
 
-void set_physical_mem(void) {
-    // TODO: Implement memory allocation for simulated physical memory.
-    // Use 32-bit values for sizes, page counts, and offsets.
-    
-    // Initialize recursive mutex on first call
-    // if (!is_initialized) {
-    //     pthread_mutexattr_init(&vm_mutex_attr);
-    //     pthread_mutexattr_settype(&vm_mutex_attr, PTHREAD_MUTEX_RECURSIVE);
-    //     pthread_mutex_init(&vm_mutex, &vm_mutex_attr);
-    // }
+ void set_physical_mem(void)
+ {
+     if (is_initialized) {
+         return;
+     }
+ 
+     if (pthread_mutex_init(&vm_mutex, NULL) != 0 ||
+         pthread_mutex_init(&tlb_mutex, NULL) != 0) {
+         fprintf(stderr, "set_physical_mem: failed to init mutexes\n");
+         exit(EXIT_FAILURE);
+     }
+ 
+     total_physical_pages = MEMSIZE     / PGSIZE;
+     total_virtual_pages  = MAX_MEMSIZE / PGSIZE;
+ 
+     uint32_t physical_bitmap_size = (total_physical_pages + 7) / 8;
+     uint32_t virtual_bitmap_size  = (total_virtual_pages  + 7) / 8;
+ 
+     physical_memory = mmap(NULL, MEMSIZE,
+                            PROT_READ | PROT_WRITE,
+                            MAP_ANONYMOUS | MAP_PRIVATE,
+                            -1, 0);
+     if (physical_memory == MAP_FAILED) {
+         fprintf(stderr, "set_physical_mem: failed to allocate physical memory\n");
+         exit(EXIT_FAILURE);
+     }
+ 
+     physical_bitmap = calloc(physical_bitmap_size, 1);
+     virtual_bitmap  = calloc(virtual_bitmap_size, 1);
+     if (!physical_bitmap || !virtual_bitmap) {
+         fprintf(stderr, "set_physical_mem: failed to allocate bitmaps\n");
+         exit(EXIT_FAILURE);
+     }
+ 
+    // Put the page directory in the first page of physical memory
+    page_directory = (pde_t *)physical_memory;
+    memset(page_directory, 0, PGSIZE);
 
-    pthread_mutexattr_init(&vm_mutex_attr);
-    pthread_mutexattr_settype(&vm_mutex_attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&vm_mutex, &vm_mutex_attr);
-    
-    // pthread_mutex_lock(&vm_mutex);
-    // if (is_initialized) {
-    //     fprintf(stderr, "physical memory already initialized\n");
-    //     pthread_mutex_unlock(&vm_mutex);
-    //     return;
-    // }
-    // Calculate page counts
-    total_physical_pages = MEMSIZE / PGSIZE;  // 1GB / 4KB = 262,144 pages
-    total_virtual_pages = MAX_MEMSIZE / PGSIZE;  // 4GB / 4KB = 1,048,576 pages
-
-    uint32_t physical_bitmap_size = (total_physical_pages + 7) / 8;
-    uint32_t virtual_bitmap_size = (total_virtual_pages + 7) / 8;
-
-    physical_memory = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (physical_memory == MAP_FAILED) {
-        fprintf(stderr, "failed to allocate physical memory\n");
-        return;
-    }
-
-    physical_bitmap = calloc(physical_bitmap_size, 1);
-    virtual_bitmap = calloc(virtual_bitmap_size, 1);
-    if (!physical_bitmap || !virtual_bitmap) {
-        fprintf(stderr, "failed to allocate memory for physical memory\n");
-        return;
-    }
-    
-    page_directory = (pde_t *)physical_memory; // put page directory at the start of physical mem
-    memset(physical_memory, 0, PGSIZE); // the page directory is 4kb
-
-    //because of this allocation the first page of physical mem is used. mark as used
+    // Mark first physical frame as used (it holds the page directory)
     bitmap_set(physical_bitmap, 0);
-    
-    // Reserve virtual page 0 (so we never return NULL as a valid address)
+
+    // Reserve virtual page 0 so NULL never becomes a valid address
     bitmap_set(virtual_bitmap, 0);
 
-    is_initialized = true;
-    // pthread_mutex_unlock(&vm_mutex);
-
-    printf("Virtual memory initialized:\n");
-    printf("  Physical memory: %u pages (%llu MB)\n", 
-           total_physical_pages, MEMSIZE / (1024*1024));
-    printf("  Virtual memory: %u pages (%llu MB)\n", 
-           total_virtual_pages, MAX_MEMSIZE / (1024*1024));
-
-}
+    // Clear TLB and reset stats
+     memset(tlb_store, 0, sizeof(tlb_store));
+     tlb_lookups = 0;
+     tlb_misses  = 0;
+ 
+     is_initialized = true;
+ 
+     printf("Virtual memory initialized:\n");
+     printf("  Physical memory: %u pages (%llu MB)\n",
+            total_physical_pages, MEMSIZE / (1024ULL * 1024ULL));
+     printf("  Virtual memory: %u pages (%llu MB)\n",
+            total_virtual_pages, MAX_MEMSIZE / (1024ULL * 1024ULL));
+ }
+ 
 
 // -----------------------------------------------------------------------------
 // TLB
@@ -153,65 +150,72 @@ void set_physical_mem(void) {
          return -1;
      }
  
-     vaddr32_t vaddr = VA2U(va);
-     // physical offset from start of simulated RAM
-     paddr32_t paddr = (paddr32_t)((uintptr_t)pa - (uintptr_t)physical_memory);
+    vaddr32_t vaddr = VA2U(va);
+    // Calculate offset from start of our simulated RAM
+    paddr32_t paddr = (paddr32_t)((uintptr_t)pa - (uintptr_t)physical_memory);
+
+    uint32_t vpn   = vaddr >> OFFSET_BITS;
+    uint32_t pfn   = paddr >> OFFSET_BITS;
+    uint32_t index = vpn % TLB_ENTRIES;   // using direct-mapped TLB
  
-     uint32_t vpn   = vaddr >> OFFSET_BITS;      // virtual page number
-     uint32_t pfn   = paddr >> OFFSET_BITS;      // physical frame number
-     uint32_t index = vpn % TLB_ENTRIES;         // direct-mapped index
- 
-     pthread_mutex_lock(&vm_mutex);
+     pthread_mutex_lock(&tlb_mutex);
  
      tlb_store[index].vpn   = vpn;
      tlb_store[index].pfn   = pfn;
      tlb_store[index].valid = true;
  
-     pthread_mutex_unlock(&vm_mutex);
+     pthread_mutex_unlock(&tlb_mutex);
  
      return 0;
  }
+ 
 
+ // Gets the full physical address (page base + offset) for a virtual address
+ static void *get_physical_addr(void *va)
+ {
+     if (!is_initialized || !va) {
+         return NULL;
+     }
 
- // get entire physical address page base + offset
- static void *get_physical_addr(void *va){
-    if (!is_initialized || !va) return NULL;
-
-    void *pa = TLB_check(va);  
-
-    if (pa) return pa;
-    
-    vaddr32_t vaddr = VA2U(va);
-    uint32_t pdx    = PDX(va);
-    uint32_t ptx    = PTX(va);
-    uint32_t offset = OFF(va);
-
-    pthread_mutex_lock(&vm_mutex);
-
-    pde_t pde = page_directory[pdx];
-    if (!(pde & PTE_VALID)) {
-        pthread_mutex_unlock(&vm_mutex);
-        return NULL;
-    }
-
-    uint32_t pt_pfn = pde >> PFN_SHIFT;  
-    pte_t *page_table = (pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
-
-    pte_t pte = page_table[ptx];
-    if (!(pte & PTE_VALID)) {
-        pthread_mutex_unlock(&vm_mutex);
-        return NULL;
-    }
-    uint32_t data_pfn  = pte >> PFN_SHIFT;
-    void *page_base    = (char *)physical_memory + data_pfn * PGSIZE;
-
-    TLB_add(va, page_base);
-
+     // Try TLB first
+     void *pa = TLB_check(va);
+     if (pa) {
+         return pa;   // Got it from TLB
+     }
+ 
+     vaddr32_t vaddr = VA2U(va);
+     uint32_t pdx    = PDX(va);
+     uint32_t ptx    = PTX(va);
+     uint32_t offset = OFF(va);
+ 
+     pthread_mutex_lock(&vm_mutex);
+ 
+     pde_t pde = page_directory[pdx];
+     if (!(pde & PTE_VALID)) {
+         pthread_mutex_unlock(&vm_mutex);
+         return NULL;
+     }
+ 
+     uint32_t pt_pfn = pde >> PFN_SHIFT;
+     pte_t *page_table = (pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
+ 
+     pte_t pte = page_table[ptx];
+     if (!(pte & PTE_VALID)) {
+         pthread_mutex_unlock(&vm_mutex);
+         return NULL;
+     }
+ 
+     uint32_t data_pfn = pte >> PFN_SHIFT;
+     void *page_base   = (char *)physical_memory + data_pfn * PGSIZE;
+ 
     pthread_mutex_unlock(&vm_mutex);
 
-    return (char *)page_base + offset; 
+    // Add this to TLB for next time
+    TLB_add(va, page_base);
 
+    return (char *)page_base + offset;
  }
+ 
  
 /*
  * TLB_check()
@@ -222,34 +226,34 @@ void set_physical_mem(void) {
  *   Pointer to the corresponding page table entry (PTE) if found.
  *   NULL if the translation is not found (TLB miss).
  */
-void *TLB_check(void *va)
-{
+ void *TLB_check(void *va)
+ {
+     if (!va || !is_initialized) {
+         return NULL;
+     }
  
-    if (!va || !is_initialized) {
-        return NULL;
-    }
-
-    vaddr32_t vaddr = VA2U(va);
-    uint32_t vpn = vaddr >> OFFSET_BITS;
-    uint32_t index = vpn % TLB_ENTRIES;
-
-    pthread_mutex_lock(&vm_mutex);
-    tlb_lookups++;
-
-    if (tlb_store[index].valid && tlb_store[index].vpn == vpn) {
-        uint32_t pfn = tlb_store[index].pfn;
-        uint32_t offset = OFF(va);
-        void *pa = (char *)physical_memory + (pfn * PGSIZE) + offset;
-        pthread_mutex_unlock(&vm_mutex);
-        return pa;
-    }
-
-    // TLB MISS
-    tlb_misses++;
-    pthread_mutex_unlock(&vm_mutex);
-    return NULL;
-
+     vaddr32_t vaddr = VA2U(va);
+     uint32_t vpn    = vaddr >> OFFSET_BITS;
+     uint32_t index  = vpn % TLB_ENTRIES;
+ 
+     pthread_mutex_lock(&tlb_mutex);
+ 
+     tlb_lookups++;
+ 
+     if (tlb_store[index].valid && tlb_store[index].vpn == vpn) {
+         uint32_t pfn    = tlb_store[index].pfn;
+         uint32_t offset = OFF(va);
+         void *pa        = (char *)physical_memory + (pfn * PGSIZE) + offset;
+ 
+         pthread_mutex_unlock(&tlb_mutex);
+         return pa;
+     }
+ 
+     tlb_misses++;
+     pthread_mutex_unlock(&tlb_mutex);
+     return NULL;
 }
+ 
 
 /*
  * print_TLB_missrate()
@@ -261,11 +265,16 @@ void *TLB_check(void *va)
  void print_TLB_missrate(void)
  {
      double miss_rate = 0.0;
+ 
+     pthread_mutex_lock(&tlb_mutex);
      if (tlb_lookups > 0) {
          miss_rate = (double)tlb_misses / (double)tlb_lookups;
      }
+     pthread_mutex_unlock(&tlb_mutex);
+ 
      printf("TLB miss rate %lf\n", miss_rate);
  }
+ 
  
 
 // -----------------------------------------------------------------------------
@@ -283,46 +292,32 @@ void *TLB_check(void *va)
  *   Pointer to the PTE structure if translation succeeds.
  *   NULL if translation fails (e.g., page not mapped).
  */
-pte_t *translate(pde_t *pgdir, void *va)
-{
-    // TODO: Extract the 32-bit virtual address and compute indices
-    // for the page directory, page table, and offset.
-    // Return the corresponding PTE if found.
-
-    //saroop add the cahce stuff here - this is without cache implementation
-
-    if (!pgdir || !va) {
-        fprintf(stderr, "translate: pgdir or va is NULL\n");
-        return NULL;
-    }
-
-    int pdx = PDX(va);
-    int ptx = PTX(va);
-    //int off = OFF(va);
-
-    pthread_mutex_lock(&vm_mutex);
-    pde_t pde = pgdir[pdx]; // get the page directory entry
-    if (!pde || !(pde & PTE_VALID) || pde==0) {
-        fprintf(stderr, "translate: page directory entry not found\n");
-        pthread_mutex_unlock(&vm_mutex);
-        return NULL;
-    }
-    
-    
-    uintptr_t pt_pfn = pde >> PFNSHIFT;
-    pte_t *page_table =(pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
-    pte_t *pte_ptr = &page_table[ptx];
-    
-    // Check if page is mapped
-    if (*pte_ptr == 0 || !(*pte_ptr & PTE_VALID)) {
-        pthread_mutex_unlock(&vm_mutex);
-        return NULL;
-    }
-    
-    pthread_mutex_unlock(&vm_mutex);
-    return pte_ptr;
-}
-
+ pte_t *translate(pde_t *pgdir, void *va)
+ {
+     if (!pgdir || !va) {
+         fprintf(stderr, "translate: pgdir or va is NULL\n");
+         return NULL;
+     }
+ 
+     uint32_t pdx = PDX(va);
+     uint32_t ptx = PTX(va);
+ 
+     pde_t pde = pgdir[pdx];
+     if (!(pde & PTE_VALID)) {
+         return NULL;
+     }
+ 
+     uint32_t pt_pfn   = pde >> PFN_SHIFT;
+     pte_t *page_table = (pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
+ 
+     pte_t *pte_ptr = &page_table[ptx];
+     if (!(*pte_ptr & PTE_VALID)) {
+         return NULL;
+     }
+ 
+     return pte_ptr;
+ }
+ 
 /*
  * map_page()
  * -----------
@@ -333,58 +328,47 @@ pte_t *translate(pde_t *pgdir, void *va)
  *   0  -> Success (mapping created)
  *  -1  -> Failure (e.g., no space or invalid address)
  */
- int map_page(pde_t *pgdir, void *va, void *pa) {
-    if (!pgdir || !va || !pa) {
-        return -1;
-    }
-    
-    // convert
+ int map_page(pde_t *pgdir, void *va, void *pa)
+ {
+     if (!pgdir || !va || !pa) {
+         return -1;
+     }
+ 
     vaddr32_t vaddr = VA2U(va);
-    paddr32_t paddr = (paddr32_t)(uintptr_t)pa - (paddr32_t)(uintptr_t)physical_memory;
-    
-    // Extract page directory index and page table index
-    uint32_t pd_index = PDX(va);
-    uint32_t pt_index = PTX(va);
-    
-    pthread_mutex_lock(&vm_mutex);
-    
-    // Get pointer to page directory entry
-    pde_t *pde_ptr = &pgdir[pd_index];
+    // Get physical offset from the base of our memory
+    paddr32_t paddr = (paddr32_t)((uintptr_t)pa - (uintptr_t)physical_memory);
+ 
+     uint32_t pd_index = PDX(va);
+     uint32_t pt_index = PTX(va);
+ 
+    pde_t *pde_ptr    = &pgdir[pd_index];
     pte_t *page_table = NULL;
-    
-    // Check if page table exists
+
+    // If we don't have a page table yet, create one
     if (*pde_ptr == 0) {
-        // Allocate a new page table
-        page_table = (pte_t *)alloc_physical_page();
-        if (!page_table) {
-            pthread_mutex_unlock(&vm_mutex);
-            perror("map_page: failed to allocate physical page");
-            return -1;
-        }
-        
-        // Initialize page table to all zeros
-        memset(page_table, 0, PGSIZE);
-        
-        // Store page table address in page directory entry
-        // Convert physical address to offset from physical_memory base
-        paddr32_t pt_offset = (paddr32_t)((uintptr_t)page_table - (uintptr_t)physical_memory);
-        uint32_t pfn = pt_offset >> OFFSET_BITS;
-        *pde_ptr = (pfn << PFN_SHIFT) | PTE_VALID;
-    } else {
-        // Page table exists, retrieve it
-        uint32_t pfn = *pde_ptr >> PFN_SHIFT;
-        page_table = (pte_t *)((char *)physical_memory + pfn * PGSIZE);
-    }
-    
-    // Get physical frame number
-    uint32_t pfn = paddr >> OFFSET_BITS;
-    
-    // Set page table entry
-    page_table[pt_index] = (pfn << PFN_SHIFT) | PTE_VALID;
-    
-    pthread_mutex_unlock(&vm_mutex);
-    return 0;
-}
+         page_table = (pte_t *)alloc_physical_page();
+         if (!page_table) {
+             perror("map_page: failed to allocate page table");
+             return -1;
+         }
+ 
+         memset(page_table, 0, PGSIZE);
+ 
+         paddr32_t pt_offset = (paddr32_t)((uintptr_t)page_table - (uintptr_t)physical_memory);
+         uint32_t  pt_pfn    = pt_offset >> OFFSET_BITS;
+ 
+         *pde_ptr = (pt_pfn << PFN_SHIFT) | PTE_VALID;
+     } else {
+         uint32_t pt_pfn = *pde_ptr >> PFN_SHIFT;
+         page_table = (pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
+     }
+ 
+     uint32_t data_pfn = paddr >> OFFSET_BITS;
+     page_table[pt_index] = (data_pfn << PFN_SHIFT) | PTE_VALID;
+ 
+     return 0;
+ }
+ 
 
 
 // -----------------------------------------------------------------------------
@@ -418,11 +402,11 @@ static void *alloc_physical_page(void) {
  */
 void *get_next_avail(int num_pages)
 {
-    // Search for num_pages consecutive free pages
+    // Look for num_pages consecutive free pages
     for (uint32_t i = 0; i <= total_virtual_pages - num_pages; i++) {
         bool found = true;
         
-        // Check if num_pages starting at i are all free
+        // Check if all the pages we need starting at i are free
         for (int j = 0; j < num_pages; j++) {
             if (bitmap_get(virtual_bitmap, i + j)) {
                 found = false;
@@ -431,18 +415,18 @@ void *get_next_avail(int num_pages)
         }
         
         if (found) {
-            // Mark these pages as allocated
+            // Mark them as used
             for (int j = 0; j < num_pages; j++) {
                 bitmap_set(virtual_bitmap, i + j);
             }
             
-            // Convert page number to virtual address
+            // Turn page number into a virtual address
             vaddr32_t va = i * PGSIZE;
             return U2VA(va);
         }
     }
     
-    return NULL;  // No space available
+    return NULL;  // Couldn't find enough space
 }
 
 /*
@@ -455,72 +439,106 @@ void *get_next_avail(int num_pages)
  *   Pointer to the starting virtual address of allocated memory (success).
  *   NULL if allocation fails.
  */
-void *n_malloc(unsigned int num_bytes)
-{
-    // Initialize on first call
-    // if (!is_initialized) {
-    //     set_physical_mem();
-    // }
-    pthread_once(&vm_init_once, set_physical_mem);
-    
-    if (num_bytes == 0) {
-        return NULL;
-    }
-    
-    // Calculate number of pages needed (round up)
-    int num_pages = (num_bytes + PGSIZE - 1) / PGSIZE;
-    
-    pthread_mutex_lock(&vm_mutex);
-    
-    // Find contiguous virtual pages
-    void *va_base = get_next_avail(num_pages);
-    if (!va_base) {
-        fprintf(stderr, "Error: Cannot find %d contiguous virtual pages\n", num_pages);
-        pthread_mutex_unlock(&vm_mutex);
-        return NULL;
-    }
-    
-    // Allocate physical pages and create mappings
-    for (int i = 0; i < num_pages; i++) {
-        // Calculate virtual address for this page
-        vaddr32_t va = VA2U(va_base) + (i * PGSIZE);
-        
-        // Allocate a physical page
-        void *pa = alloc_physical_page();
-        if (!pa) {
-            fprintf(stderr, "Error: Failed to allocate physical page %d/%d\n", i+1, num_pages);
-            
-            // Clean up previously allocated pages
-            for (int j = 0; j < i; j++) {
-                vaddr32_t cleanup_va = VA2U(va_base) + (j * PGSIZE);
-                uint32_t vpage = cleanup_va / PGSIZE;
-                bitmap_clear(virtual_bitmap, vpage);
-                // TODO: Free physical pages and clear page table entries
-            }
-            
-            pthread_mutex_unlock(&vm_mutex);
-            return NULL;
-        }
-        
-        // Initialize the physical page to zero
-        memset(pa, 0, PGSIZE);
-        
-        // Create mapping in page table
-        if (map_page(page_directory, U2VA(va), pa) < 0) {
-            fprintf(stderr, "Error: Failed to map page %d/%d\n", i+1, num_pages);
-            pthread_mutex_unlock(&vm_mutex);
-            return NULL;
-        }
-    }
-    
-    pthread_mutex_unlock(&vm_mutex);
-    
-   // printf("n_malloc: Allocated %d bytes (%d pages) at VA %p\n", 
-     //      num_bytes, num_pages, va_base);
-    
-    return va_base;
-}
+ void *n_malloc(unsigned int num_bytes)
+ {
+     // Make sure VM is set up on first call
+     pthread_once(&vm_init_once, set_physical_mem);
 
+     if (!is_initialized || num_bytes == 0) {
+         return NULL;
+     }
+
+     // Figure out how many pages we need (round up)
+     int num_pages = (num_bytes + PGSIZE - 1) / PGSIZE;
+
+     pthread_mutex_lock(&vm_mutex);
+
+     // Find contiguous virtual pages (get_next_avail marks them as used)
+     void *va_base = get_next_avail(num_pages);
+     if (!va_base) {
+         fprintf(stderr, "Error: Cannot find %d contiguous virtual pages\n", num_pages);
+         pthread_mutex_unlock(&vm_mutex);
+         return NULL;
+     }
+ 
+     vaddr32_t base_u      = VA2U(va_base);
+     uint32_t  start_vpage = base_u / PGSIZE;
+     int       mapped_pages = 0;  // track how many we've mapped so far
+
+     for (int i = 0; i < num_pages; i++) {
+         vaddr32_t page_va_u = base_u + (i * PGSIZE);
+         void     *page_va   = U2VA(page_va_u);
+
+         // Get a physical page
+         void *pa = alloc_physical_page();
+         if (!pa) {
+             fprintf(stderr, "Error: Failed to allocate physical page %d/%d\n",
+                     i + 1, num_pages);
+
+             // Undo all the mappings we made so far
+             for (int j = 0; j < mapped_pages; j++) {
+                 vaddr32_t cleanup_va_u = base_u + (j * PGSIZE);
+                 void     *cleanup_va   = U2VA(cleanup_va_u);
+ 
+                 pte_t *pte = translate(page_directory, cleanup_va);
+                 if (pte && (*pte & PTE_VALID)) {
+                     uint32_t pfn = *pte >> PFN_SHIFT;
+                     bitmap_clear(physical_bitmap, pfn);
+                     *pte = 0;
+                 }
+             }
+ 
+             // Clear all virtual bits reserved by get_next_avail 
+             for (int j = 0; j < num_pages; j++) {
+                 bitmap_clear(virtual_bitmap, start_vpage + j);
+             }
+ 
+             pthread_mutex_unlock(&vm_mutex);
+             return NULL;
+         }
+
+         // Clear the physical page
+         memset(pa, 0, PGSIZE);
+
+         // Map this virtual page to the physical page
+         if (map_page(page_directory, page_va, pa) < 0) {
+             fprintf(stderr, "Error: Failed to map page %d/%d\n",
+                     i + 1, num_pages);
+
+             // Free the physical page we just got
+             paddr32_t pt_offset = (paddr32_t)((uintptr_t)pa - (uintptr_t)physical_memory);
+             uint32_t  pfn_new   = pt_offset >> OFFSET_BITS;
+             bitmap_clear(physical_bitmap, pfn_new);
+
+             // Undo previous mappings
+             for (int j = 0; j < mapped_pages; j++) {
+                 vaddr32_t cleanup_va_u = base_u + (j * PGSIZE);
+                 void     *cleanup_va   = U2VA(cleanup_va_u);
+ 
+                 pte_t *pte = translate(page_directory, cleanup_va);
+                 if (pte && (*pte & PTE_VALID)) {
+                     uint32_t pfn = *pte >> PFN_SHIFT;
+                     bitmap_clear(physical_bitmap, pfn);
+                     *pte = 0;
+                 }
+             }
+ 
+             // Clear all virtual bits reserved by get_next_avail 
+             for (int j = 0; j < num_pages; j++) {
+                 bitmap_clear(virtual_bitmap, start_vpage + j);
+             }
+ 
+             pthread_mutex_unlock(&vm_mutex);
+             return NULL;
+         }
+ 
+         mapped_pages++;
+     }
+ 
+     pthread_mutex_unlock(&vm_mutex);
+     return va_base;
+ }
+ 
 /*
  * n_free()
  * ---------
@@ -530,53 +548,63 @@ void *n_malloc(unsigned int num_bytes)
  *
  * Return value: None.
  */
-void n_free(void *va, int size)
-{
-    if (!va || size <= 0 || !is_initialized) {
-        fprintf(stderr, "Error: Invalid n_free parameters\n");
-        return;
-    }
-    
-    // Calculate number of pages to free
-    int num_pages = (size + PGSIZE - 1) / PGSIZE;
-    vaddr32_t vaddr_base = VA2U(va);
-    
-    pthread_mutex_lock(&vm_mutex);
-    
-    for (int i = 0; i < num_pages; i++) {
-        vaddr32_t current_va = vaddr_base + (i * PGSIZE);
-        uint32_t vpage_num = current_va / PGSIZE;
-        
-        // Check if virtual page is actually allocated
-        if (!bitmap_get(virtual_bitmap, vpage_num)) {
-            fprintf(stderr, "Warning: Trying to free unallocated virtual page at %p\n", 
-                    U2VA(current_va));
-            continue;
-        }
-        
-        // Get page table entry
-        pte_t *pte = translate(page_directory, U2VA(current_va));
-        
-        if (pte) {
-            // Get physical frame number
-            uint32_t pfn = *pte >> PFN_SHIFT;
-            
-            // Free the physical page
-            bitmap_clear(physical_bitmap, pfn);
-            
-            // Clear the page table entry
-            *pte = 0;
-        }
-        
-        // Free the virtual page
-        bitmap_clear(virtual_bitmap, vpage_num);
-    }
-    
+ void n_free(void *va, int size)
+ {
+     if (!va || size <= 0 || !is_initialized) {
+         fprintf(stderr, "Error: Invalid n_free parameters\n");
+         return;
+     }
+ 
+     int        num_pages   = (size + PGSIZE - 1) / PGSIZE;
+     vaddr32_t  vaddr_base  = VA2U(va);
+ 
+     pthread_mutex_lock(&vm_mutex);
+ 
+     for (int i = 0; i < num_pages; i++) {
+         vaddr32_t current_va  = vaddr_base + (i * PGSIZE);
+         uint32_t  vpage_num   = current_va / PGSIZE;
+
+         // Make sure this page was actually allocated before freeing it
+         if (!bitmap_get(virtual_bitmap, vpage_num)) {
+             fprintf(stderr,
+                     "Warning: Trying to free unallocated virtual page at %p\n",
+                     U2VA(current_va));
+             continue;
+         }
+
+         // Get the page table entry
+         pte_t *pte = translate(page_directory, U2VA(current_va));
+         if (pte) {
+             uint32_t pfn = *pte >> PFN_SHIFT;
+
+             // Free the physical page and clear the entry
+             bitmap_clear(physical_bitmap, pfn);
+             *pte = 0;
+ 
+             pthread_mutex_lock(&tlb_mutex);
+             uint32_t vpn = current_va >> OFFSET_BITS;
+             for (int t = 0; t < TLB_ENTRIES; t++) {
+                 if (tlb_store[t].valid && tlb_store[t].vpn == vpn) {
+                     tlb_store[t].valid = false;
+                 }
+            }
+            pthread_mutex_unlock(&tlb_mutex);
+         } else {
+             fprintf(stderr,
+                     "Warning: Page table entry missing while freeing VA %p\n",
+                     U2VA(current_va));
+         }
+
+         // Mark the virtual page as free
+         bitmap_clear(virtual_bitmap, vpage_num);
+     }
+ 
     pthread_mutex_unlock(&vm_mutex);
-    
-   // printf("n_free: Freed %d bytes (%d pages) at VA %p\n", 
-       //    size, num_pages, va);
+
+    // printf("n_free: Freed %d bytes (%d pages) starting at VA %p\n",
+    //         size, num_pages, va);
 }
+ 
 
 // -----------------------------------------------------------------------------
 // Data Movement
@@ -592,57 +620,41 @@ void n_free(void *va, int size)
  *   0  -> Success (data written successfully)
  *  -1  -> Failure (e.g., translation failure)
  */
-int put_data(void *va, void *val, int size)
-{
-    if (!va || !val || size <= 0 || !is_initialized) {
-        fprintf(stderr, "Error: Invalid put_data parameters\n");
-        return -1;
-    }
-    
-    vaddr32_t current_va = VA2U(va);
-    int remaining = size;
-    int src_offset = 0;
-    
-    pthread_mutex_lock(&vm_mutex);
-    
-    while (remaining > 0) {
-        void *pa = get_physical_addr(U2VA(current_va));
-        // Translate virtual address to get PTE
-        // pte_t *pte = translate(page_directory, U2VA(current_va));
-        
-        if (!pa) {
-            fprintf(stderr, "Error: Virtual address %p not mapped\n", U2VA(current_va));
-            pthread_mutex_unlock(&vm_mutex);
-            return -1;
-        }
-        
-        // // Get physical frame number
-        // uint32_t pfn = *pte >> PFN_SHIFT;
-        
-        // Calculate offset within the page
-        uint32_t page_offset = OFF(U2VA(current_va));
-        
-        // Calculate how many bytes to copy in this page
-        uint32_t bytes_in_page = PGSIZE - page_offset;
-        if (bytes_in_page > remaining) {
-            bytes_in_page = remaining;
-        }
-        
-        // Calculate physical address
-        // void *physical_addr = (char *)physical_memory + (pfn * PGSIZE) + page_offset;
-        
-        // Copy data
-        memcpy(pa, (char *)val + src_offset, bytes_in_page);
-        
-        // Update counters
-        remaining -= bytes_in_page;
-        src_offset += bytes_in_page;
-        current_va += bytes_in_page;
-    }
-    
-    pthread_mutex_unlock(&vm_mutex);
-    return 0;
-}
+ int put_data(void *va, void *val, int size)
+ {
+     if (!va || !val || size <= 0 || !is_initialized) {
+         fprintf(stderr, "Error: Invalid put_data parameters\n");
+         return -1;
+     }
+ 
+     vaddr32_t current_va = VA2U(va);
+     int remaining         = size;
+     int src_offset        = 0;
+ 
+     while (remaining > 0) {
+         void *pa = get_physical_addr(U2VA(current_va));
+         if (!pa) {
+             fprintf(stderr, "Error: Virtual address %p not mapped in put_data\n",
+                     U2VA(current_va));
+             return -1;
+         }
+ 
+         uint32_t page_offset   = OFF(U2VA(current_va));
+         uint32_t bytes_in_page = PGSIZE - page_offset;
+         if (bytes_in_page > remaining) {
+             bytes_in_page = remaining;
+         }
+ 
+         memcpy(pa, (char *)val + src_offset, bytes_in_page);
+ 
+         remaining  -= bytes_in_page;
+         src_offset += bytes_in_page;
+         current_va += bytes_in_page;
+     }
+ 
+     return 0;
+ }
+ 
 
 /*
  * get_data()
@@ -652,56 +664,39 @@ int put_data(void *va, void *val, int size)
  *
  * Return value: None.
  */
-void get_data(void *va, void *val, int size)
-{
-    if (!va || !val || size <= 0 || !is_initialized) {
-        fprintf(stderr, "Error: Invalid get_data parameters\n");
-        return;
-    }
-    
-    vaddr32_t current_va = VA2U(va);
-    int remaining = size;
-    int dst_offset = 0;
-    
-    pthread_mutex_lock(&vm_mutex);
-    
-    while (remaining > 0) {
-        // // Translate virtual address to get PTE
-        // pte_t *pte = translate(page_directory, U2VA(current_va));
-        void *pa = get_physical_addr(U2VA(current_va));
-
-        if (!pa) {
-            fprintf(stderr, "Error: Virtual address %p not mapped\n", U2VA(current_va));
-            pthread_mutex_unlock(&vm_mutex);
-            return;
-        }
-        
-        // Get physical frame number
-        // uint32_t pfn = *pte >> PFN_SHIFT;
-        
-        // Calculate offset within the page
-        uint32_t page_offset = OFF(U2VA(current_va));
-        
-        // Calculate how many bytes to copy in this page
-        uint32_t bytes_in_page = PGSIZE - page_offset;
-        if (bytes_in_page > remaining) {
-            bytes_in_page = remaining;
-        }
-        
-        // Calculate physical address
-        // void *physical_addr = (char *)physical_memory + (pfn * PGSIZE) + page_offset;
-        
-        // Copy data
-        memcpy((char *)val + dst_offset, pa, bytes_in_page);
-        
-        // Update counters
-        remaining -= bytes_in_page;
-        dst_offset += bytes_in_page;
-        current_va += bytes_in_page;
-    }
-    
-    pthread_mutex_unlock(&vm_mutex);
-}
+ void get_data(void *va, void *val, int size)
+ {
+     if (!va || !val || size <= 0 || !is_initialized) {
+         fprintf(stderr, "Error: Invalid get_data parameters\n");
+         return;
+     }
+ 
+     vaddr32_t current_va = VA2U(va);
+     int remaining         = size;
+     int dst_offset        = 0;
+ 
+     while (remaining > 0) {
+         void *pa = get_physical_addr(U2VA(current_va));
+         if (!pa) {
+             fprintf(stderr, "Error: Virtual address %p not mapped in get_data\n",
+                     U2VA(current_va));
+             return;
+         }
+ 
+         uint32_t page_offset   = OFF(U2VA(current_va));
+         uint32_t bytes_in_page = PGSIZE - page_offset;
+         if (bytes_in_page > remaining) {
+             bytes_in_page = remaining;
+         }
+ 
+         memcpy((char *)val + dst_offset, pa, bytes_in_page);
+ 
+         remaining  -= bytes_in_page;
+         dst_offset += bytes_in_page;
+         current_va += bytes_in_page;
+     }
+ }
+ 
 
 // -----------------------------------------------------------------------------
 // Matrix Multiplication
@@ -729,31 +724,31 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer)
             uint32_t sum = 0;
             
             for (int k = 0; k < size; k++) {
-                // Calculate addresses for mat1[i][k] and mat2[k][j]
-                // Using row-major order: A[i][j] = A + (i * size + j) * sizeof(element)
+                // Figure out where mat1[i][k] and mat2[k][j] are
+                // Row-major order: A[i][j] = A + (i * size + j) * sizeof(element)
                 vaddr32_t addr_mat1 = VA2U(mat1) + ((i * size + k) * sizeof(uint32_t));
                 vaddr32_t addr_mat2 = VA2U(mat2) + ((k * size + j) * sizeof(uint32_t));
                 
                 uint32_t a, b;
                 
-                // Read mat1[i][k]
+                // Grab mat1[i][k]
                 get_data(U2VA(addr_mat1), &a, sizeof(uint32_t));
                 
-                // Read mat2[k][j]
+                // Grab mat2[k][j]
                 get_data(U2VA(addr_mat2), &b, sizeof(uint32_t));
                 
-                // Accumulate
+                // Add to running sum
                 sum += (a * b);
             }
             
-            // Calculate address for answer[i][j]
+            // Figure out where answer[i][j] goes
             vaddr32_t addr_answer = VA2U(answer) + ((i * size + j) * sizeof(uint32_t));
             
-            // Write result
+            // Store the result
             put_data(U2VA(addr_answer), &sum, sizeof(uint32_t));
         }
         
-        // Progress indicator for large matrices
+        // Show progress for big matrices
         if ((i + 1) % 10 == 0) {
             printf("  Completed row %d/%d\n", i + 1, size);
         }

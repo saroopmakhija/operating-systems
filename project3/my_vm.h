@@ -20,15 +20,15 @@
 
 #define VA_BITS        32u           // Simulated virtual address width
 
-// You will change this when testing different page sizes (4K–64K)
+// Change this when testing different page sizes (4KB to 64KB)
 #define PGSIZE         65536u         // Page size in bytes
 
 #define MAX_MEMSIZE    (1ULL << 32)  // Max virtual memory = 4 GB
 #define MEMSIZE        (1ULL << 30)  // Simulated physical memory = 1 GB
 
-/* Page size–dependent split:
+/* How we split the virtual address depends on page size:
  *   VA = [ PDX_BITS | PTX_BITS | OFFSET_BITS ] = 32 bits
- * We support: 4KB, 8KB, 16KB, 32KB, 64KB
+ * Supported: 4KB, 8KB, 16KB, 32KB, 64KB
  */
 #if   PGSIZE == 4096u       /* 4KB  */
     #define OFFSET_BITS  12u
@@ -54,7 +54,7 @@
     #error "Unsupported PGSIZE. Supported: 4KB, 8KB, 16KB, 32KB, 64KB."
 #endif
 
-// Valid-bit flag for PTE/PDE (LSB = 1 means “valid mapping”)
+// Valid bit for page table entries (LSB = 1 means the mapping is valid)
 #define PTE_VALID      1u
 
 // --- Constants for bit shifts and masks ---
@@ -65,12 +65,12 @@
 #define PTXMASK        ((1u << PTX_BITS)   - 1u)
 #define PDXMASK        ((1u << PDX_BITS)   - 1u)
 
-// Some of your old code used PXMASK; keep it as PTXMASK for compatibility if needed
+// Legacy name - keeping this for compatibility with older code
 #define PXMASK         PTXMASK
 
-// Physical frame number shift (for PTE/PDE PFN fields)
+// Shift amount for physical frame numbers in page table entries
 #define PFN_SHIFT      (OFFSET_BITS)
-// Keep old name for any existing code that uses PFNSHIFT
+// Old name kept for backwards compatibility
 #define PFNSHIFT       PFN_SHIFT
 
 // -----------------------------------------------------------------------------
@@ -98,17 +98,17 @@ static inline void*     U2VA(vaddr32_t u) { return (void*)(uintptr_t)u; }
 //  TLB Configuration
 // -----------------------------------------------------------------------------
 
-#define TLB_ENTRIES    512   // Default number of TLB entries (can be changed)
+#define TLB_ENTRIES    512   // Number of TLB entries (can change this if needed)
 
 struct tlb {
-    // Direct-mapped TLB entry:
+    // Each TLB entry stores:
     //   vpn   : virtual page number
     //   pfn   : physical frame number
-    //   valid : entry is usable when true
+    //   valid : whether this entry is currently valid
     uint32_t vpn;
     uint32_t pfn;
     bool     valid;
-    // Optional: you could add uint64_t last_used; for LRU, but not required
+    // Could add uint64_t last_used here for LRU if we wanted
 };
 
 // -----------------------------------------------------------------------------
