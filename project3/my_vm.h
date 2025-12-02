@@ -21,15 +21,12 @@
 #define VA_BITS        32u           // Simulated virtual address width
 
 // Change this when testing different page sizes (4KB to 64KB)
-#define PGSIZE         65536u         // Page size in bytes
+#define PGSIZE         32768u         // Page size in bytes
 
 #define MAX_MEMSIZE    (1ULL << 32)  // Max virtual memory = 4 GB
 #define MEMSIZE        (1ULL << 30)  // Simulated physical memory = 1 GB
 
-/* How we split the virtual address depends on page size:
- *   VA = [ PDX_BITS | PTX_BITS | OFFSET_BITS ] = 32 bits
- * Supported: 4KB, 8KB, 16KB, 32KB, 64KB
- */
+
 #if   PGSIZE == 4096u       /* 4KB  */
     #define OFFSET_BITS  12u
     #define PTX_BITS     10u

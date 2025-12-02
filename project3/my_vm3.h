@@ -1,5 +1,7 @@
-// Fixing internal fragmentation by optimizing malloc
+// ssm229 Saroop Makhija
+// mk2177 Aiman Koli 
 
+// Fixing internal fragmentation by optimizing malloc
 #ifndef MY_VM3_H_INCLUDED
 #define MY_VM3_H_INCLUDED
 
@@ -28,10 +30,7 @@
 #define MAX_MEMSIZE    (1ULL << 32)  // Max virtual memory = 4 GB
 #define MEMSIZE        (1ULL << 30)  // Simulated physical memory = 1 GB
 
-/* How we split the virtual address depends on page size:
- *   VA = [ PDX_BITS | PTX_BITS | OFFSET_BITS ] = 32 bits
- * Supported: 4KB, 8KB, 16KB, 32KB, 64KB
- */
+
 #if   PGSIZE == 4096u       /* 4KB  */
     #define OFFSET_BITS  12u
     #define PTX_BITS     10u
@@ -65,7 +64,7 @@
 #define PTXMASK        ((1u << PTX_BITS)   - 1u)
 #define PDXMASK        ((1u << PDX_BITS)   - 1u)
 
-// Legacy name - keeping this for compatibility with older code
+
 #define PXMASK         PTXMASK
 
 // Shift amount for physical frame numbers in page table entries

@@ -15,19 +15,19 @@
 #endif
 #endif
 
-static void    *phys_mem64         = NULL;
-static pde64_t *pml4               = NULL;
-static unsigned char *phys_bitmap  = NULL;
-static uint64_t       total_phys_pages = 0;
+static void *phys_mem64 = NULL;
+static pde64_t *pml4 = NULL;
+static unsigned char *phys_bitmap = NULL;
+static uint64_t total_phys_pages = 0;
 
-static vaddr64_t next_free_vpage   = 0;
+static vaddr64_t next_free_vpage = 0;
 
 static struct tlb64_entry tlb64[TLB64_ENTRIES];
 static unsigned long long tlb64_lookups = 0;
 static unsigned long long tlb64_misses  = 0;
 
 static pthread_mutex_t vm64_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int             vm64_initialized = 0;
+static int vm64_initialized = 0;
 
 // Bitmap helpers
 
@@ -370,8 +370,8 @@ static int vm64_get_locked(vaddr64_t va, void *dst, size_t size) {
 
         memcpy(udst, (unsigned char *)src_host, bytes_in_page);
 
-        udst      += bytes_in_page;
-        cur_va    += bytes_in_page;
+        udst += bytes_in_page;
+        cur_va += bytes_in_page;
         remaining -= bytes_in_page;
     }
 

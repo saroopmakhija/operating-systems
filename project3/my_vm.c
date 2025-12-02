@@ -1,6 +1,7 @@
-
+// ssm229 Saroop Makhija
+// mk2177 Aiman Koli 
 #include "my_vm.h"
-#include <string.h>   // optional for memcpy if you later implement put/get
+#include <string.h>
 #include <sys/mman.h>
 #include <pthread.h>
 
@@ -8,12 +9,12 @@
 // Global Declarations (optional)
 // -----------------------------------------------------------------------------
 
-static void *physical_memory      = NULL;   // Our simulated physical RAM
-static pde_t *page_directory      = NULL;   // Top-level page directory
+static void *physical_memory = NULL;   // Our simulated physical RAM
+static pde_t *page_directory = NULL;   // Top-level page directory
 static unsigned char *physical_bitmap = NULL;
 static unsigned char *virtual_bitmap  = NULL;
 
-static bool is_initialized        = false;
+static bool is_initialized = false;
 
 
 static pthread_mutex_t vm_mutex;
@@ -154,19 +155,19 @@ static void *alloc_physical_page(void);
     // Calculate offset from start of our simulated RAM
     paddr32_t paddr = (paddr32_t)((uintptr_t)pa - (uintptr_t)physical_memory);
 
-    uint32_t vpn   = vaddr >> OFFSET_BITS;
-    uint32_t pfn   = paddr >> OFFSET_BITS;
+    uint32_t vpn = vaddr >> OFFSET_BITS;
+    uint32_t pfn = paddr >> OFFSET_BITS;
     uint32_t index = vpn % TLB_ENTRIES;   // using direct-mapped TLB
  
-     pthread_mutex_lock(&tlb_mutex);
+    pthread_mutex_lock(&tlb_mutex);
  
-     tlb_store[index].vpn   = vpn;
-     tlb_store[index].pfn   = pfn;
-     tlb_store[index].valid = true;
+    tlb_store[index].vpn   = vpn;
+    tlb_store[index].pfn   = pfn;
+    tlb_store[index].valid = true;
  
-     pthread_mutex_unlock(&tlb_mutex);
+    pthread_mutex_unlock(&tlb_mutex);
  
-     return 0;
+    return 0;
  }
  
 
@@ -184,8 +185,8 @@ static void *alloc_physical_page(void);
      }
  
      vaddr32_t vaddr = VA2U(va);
-     uint32_t pdx    = PDX(va);
-     uint32_t ptx    = PTX(va);
+     uint32_t pdx = PDX(va);
+     uint32_t ptx = PTX(va);
      uint32_t offset = OFF(va);
  
      pthread_mutex_lock(&vm_mutex);
@@ -196,7 +197,7 @@ static void *alloc_physical_page(void);
          return NULL;
      }
  
-     uint32_t pt_pfn = pde >> PFN_SHIFT;
+     uint32_t pt_pfn= pde >> PFN_SHIFT;
      pte_t *page_table = (pte_t *)((char *)physical_memory + pt_pfn * PGSIZE);
  
      pte_t pte = page_table[ptx];
@@ -205,8 +206,8 @@ static void *alloc_physical_page(void);
          return NULL;
      }
  
-     uint32_t data_pfn = pte >> PFN_SHIFT;
-     void *page_base   = (char *)physical_memory + data_pfn * PGSIZE;
+     uint32_t data_pfn= pte >> PFN_SHIFT;
+     void *page_base= (char *)physical_memory + data_pfn * PGSIZE;
  
     pthread_mutex_unlock(&vm_mutex);
 
@@ -532,11 +533,11 @@ void *get_next_avail(int num_pages)
              return NULL;
          }
  
-         mapped_pages++;
+        mapped_pages++;
      }
  
-     pthread_mutex_unlock(&vm_mutex);
-     return va_base;
+    pthread_mutex_unlock(&vm_mutex);
+    return va_base;
  }
  
 /*
