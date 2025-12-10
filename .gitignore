@@ -12,3 +12,5 @@
 *.err
 #ignore all debug logs
 *.debug
+
+.vscode/
