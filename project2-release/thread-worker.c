@@ -53,6 +53,22 @@ static void thread_wrapper(uintptr_t tcb_word);
 static int cfs_fixed_slice_ms = -1;    // computed once
 static int cfs_initial_threads = -1;   // snapshot of initial worker count
 
+/* MLFQ: Get time slice for priority level */
+static int get_mlfq_time_slice(int priority) {
+    // Higher priority = shorter time slice
+    // Level 0: 10ms, Level 1: 20ms, Level 2: 40ms, etc.
+    return QUANTUM * (1 << priority);
+}
+
+/* MLFQ: Set timer dynamically based on time slice */
+static void set_mlfq_timer(int time_slice_ms) {
+    struct itimerval timer;
+    timer.it_interval.tv_sec = 0;
+    timer.it_interval.tv_usec = time_slice_ms * 1000;
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = time_slice_ms * 1000;
+    setitimer(ITIMER_PROF, &timer, NULL);
+}
 
 /* create a new thread */
 int worker_create(worker_t * thread, pthread_attr_t * attr, 
@@ -766,7 +782,8 @@ static void sched_mlfq() {
         current_thread->time_at_current_level += runtime_ms;
         
         // Check if we came from timer (ran full quantum) or yield
-        current_thread->was_preempted = (runtime_ms >= QUANTUM - 1); // Allow 1ms tolerance
+        int expected_slice = get_mlfq_time_slice(current_thread->priority);
+        current_thread->was_preempted = (runtime_ms >= expected_slice - 1); // Allow 1ms tolerance
         
         // Rule 4: Check if allotment exhausted at this level
         if (current_thread->time_at_current_level >= current_thread->allotment_at_level) {
@@ -795,7 +812,7 @@ static void sched_mlfq() {
     
     if (next_thread == NULL) {
         // No runnable threads
-		unblock_prof();
+        unblock_prof();
         if (current_thread == NULL) {
             setcontext(&main_tcb->context);
         }
@@ -811,6 +828,10 @@ static void sched_mlfq() {
     // Record when we're scheduling this thread
     gettimeofday(&next_thread->last_scheduled, NULL);
     
+    // **KEY CHANGE: Set timer based on next thread's priority level**
+    int time_slice = get_mlfq_time_slice(next_thread->priority);
+    set_mlfq_timer(time_slice);
+    
     // Context switch
     if (current_thread != next_thread) {
         tot_cntx_switches++;
@@ -821,7 +842,7 @@ static void sched_mlfq() {
     current_thread = next_thread;
     
     // Switch to selected thread
-	unblock_prof();
+    unblock_prof();
     setcontext(&next_thread->context);
 }
 
