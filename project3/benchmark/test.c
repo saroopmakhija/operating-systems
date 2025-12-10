@@ -79,7 +79,7 @@ int main(void) {
 
     // avoid leak in this probe-based check
     n_free(a, ARRAY_SIZE);
-
+    print_TLB_missrate();
     return 0;
 }
 

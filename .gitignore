@@ -1,0 +1,16 @@
+#ignore all object files
+*.o
+#ignore all libraries
+*.a
+#ignore all executables
+*.exe
+#ignore all binaries
+*.bin
+#ignore all logs
+*.log
+#ignore all error logs
+*.err
+#ignore all debug logs
+*.debug
+
+.vscode/
